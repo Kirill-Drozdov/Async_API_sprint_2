@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16.0
+    ports:
+      - "5433:5433"
+    volumes:
+      - ./postgres_to_es/etl_data:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./postgres_to_es/.env
+  elasticsearch:
+    image: elasticsearch:8.6.2
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+  etl_process:
+    build:
+      context: ./postgres_to_es/.
+    depends_on:
+      - db
+      - elasticsearch
+    env_file:
+      - ./postgres_to_es/.env
+  # redis:
+  #   image: redis:5.0.4
+  #   container_name: redis
+  #   volumes:
+  #     - redis_data:/data
+  #   command: redis-server --save 60 1 --loglevel notice
+  # movie_api:
+  #   # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
+  #   # на время разработки или внесения правок по ревью.
+  #   # profiles: ["disabled"]
+  #   build:
+  #     context: ./src/.
+  #   depends_on:
+  #     - etl_process
+  #     - redis
+  #   env_file:
+  #     - ./src/.env
+  # nginx:
+  #   image: nginx:1.25.3
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx/site.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - movie_api
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+  redis_data:
