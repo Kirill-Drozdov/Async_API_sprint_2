@@ -16,24 +16,24 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel notice
-  movie_api:
+  api:
     build:
       context: ../../src/.
     ports:
       - "8000:8000"
-    image: movie_api-image
+    image: api-image
     depends_on:
       - redis
       - elasticsearch
     env_file:
       - ../../src/.env
-  tests:
-    image: fastapi-image
-    entrypoint: >
-      sh -c "pip install -r /tests/functional/requirements.txt
-      && python3 /tests/functional/utils/wait_for_es.py
-      && python3 /tests/functional/utils/wait_for_redis.py
-      && pytest /tests/functional/src"
+  # tests:
+  #   image: api-image
+  #   entrypoint: >
+  #     sh -c "pip install -r requirements.txt
+  #     && python3 utils/wait_for_es.py
+  #     && python3 utils/wait_for_redis.py
+  #     && pytest src/."
 
 volumes:
   postgres_data:
