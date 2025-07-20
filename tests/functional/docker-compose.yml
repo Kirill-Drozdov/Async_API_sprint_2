@@ -1,0 +1,41 @@
+services:
+  elasticsearch:
+    image: elasticsearch:8.6.2
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+  redis:
+    image: redis:5.0.4
+    ports:
+      - "6379:6379"
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel notice
+  movie_api:
+    build:
+      context: ../../src/.
+    ports:
+      - "8000:8000"
+    image: movie_api-image
+    depends_on:
+      - redis
+      - elasticsearch
+    env_file:
+      - ../../src/.env
+  tests:
+    image: fastapi-image
+    entrypoint: >
+      sh -c "pip install -r /tests/functional/requirements.txt
+      && python3 /tests/functional/utils/wait_for_es.py
+      && python3 /tests/functional/utils/wait_for_redis.py
+      && pytest /tests/functional/src"
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+  redis_data:
