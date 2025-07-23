@@ -65,6 +65,8 @@ async def test_search():
 
     updated, errors = await async_bulk(client=es_client, actions=bulk_query)
 
+    await es_client.indices.refresh(index=test_settings.es_index)
+
     await es_client.close()
 
     if errors:
