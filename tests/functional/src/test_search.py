@@ -3,7 +3,6 @@ import uuid
 from http import HTTPStatus
 from typing import Callable
 
-import aiohttp
 import pytest
 
 from tests.functional.settings import test_settings
@@ -25,6 +24,7 @@ from tests.functional.settings import test_settings
 @pytest.mark.asyncio
 async def test_search(
     es_write_data: Callable,
+    make_get_request: Callable,
     query_data: dict[str, str],
     expected_answer: dict[str, int],
 ):
@@ -64,21 +64,22 @@ async def test_search(
 
     bulk_query: list[dict] = []
     for row in es_data:
-        data = {'_index': test_settings.es_index, '_id': row['id']}
-        data.update({'_source': row})
-        bulk_query.append(data)
+        bulk_query.append(
+            {
+                '_index': test_settings.es_index,
+                '_id': row['id'],
+                '_source': row,
+            }
+        )
 
     # 2. Загружаем данные в ES
     await es_write_data(bulk_query)
 
     # 3. Запрашиваем данные из ES по API
     url = test_settings.service_url + '/api/v1/films/search'
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=query_data) as response:
-            body = await response.json()
-            status = response.status
+
+    body, status = await make_get_request(url, query_data)
 
     # 4. Проверяем ответ
-
     assert status == expected_answer.get('status')
     assert len(body) == expected_answer.get('length')

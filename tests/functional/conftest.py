@@ -1,6 +1,8 @@
 """Модуль с фикстурами тестов."""
 import asyncio
+from typing import Callable
 
+import aiohttp
 from elasticsearch import AsyncElasticsearch
 from elasticsearch.helpers import async_bulk
 import pytest
@@ -24,8 +26,14 @@ async def es_client():
         yield es_client
 
 
+@pytest.fixture(name='aiohttp_session', scope='session')
+async def aiohttp_session():
+    async with aiohttp.ClientSession() as session:
+        yield session
+
+
 @pytest.fixture(name='es_write_data')
-def es_write_data(es_client: AsyncElasticsearch):
+def es_write_data(es_client: AsyncElasticsearch) -> Callable:
     """Фикстура для загрузки данных в ElasticSearch."""
     async def inner(data: list[dict]):
         if await es_client.indices.exists(index=test_settings.es_index):
@@ -44,4 +52,15 @@ def es_write_data(es_client: AsyncElasticsearch):
 
         if errors:
             raise Exception('Ошибка записи данных в Elasticsearch')
+    return inner
+
+
+@pytest.fixture(name='make_get_request')
+def make_get_request(aiohttp_session: aiohttp.ClientSession) -> Callable:
+    """Фикстура для загрузки данных в ElasticSearch."""
+    async def inner(url: str, query_data: dict[str, str]):
+        async with aiohttp_session.get(url, params=query_data) as response:
+            body = await response.json()
+            status = response.status
+            return body, status
     return inner
