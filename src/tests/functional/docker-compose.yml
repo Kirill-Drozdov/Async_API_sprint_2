@@ -18,7 +18,7 @@ services:
     command: redis-server --save 60 1 --loglevel notice
   api:
     build:
-      context: ../../src/.
+      context: ../../.
     ports:
       - "8000:8000"
     image: api-image
@@ -27,13 +27,15 @@ services:
       - elasticsearch
     env_file:
       - ./.env
-  # tests:
-  #   image: api-image
-  #   entrypoint: >
-  #     sh -c "pip install -r requirements.txt
-  #     && python3 utils/wait_for_es.py
-  #     && python3 utils/wait_for_redis.py
-  #     && pytest src/."
+  tests:
+    image: api-image
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      sh -c "pip install -r tests/functional/requirements.txt
+      && python3 -m tests.functional.utils.wait_for_es
+      && python3 -m tests.functional.utils.wait_for_redis
+      && pytest tests/functional/src"
 
 volumes:
   postgres_data:

@@ -2,7 +2,7 @@ import time
 
 from redis.asyncio import Redis
 
-from settings import test_settings
+from tests.functional.settings import test_settings
 
 if __name__ == '__main__':
     redis = Redis(
@@ -10,6 +10,7 @@ if __name__ == '__main__':
         port=test_settings.redis_port,
     )
     while True:
+        print('Test Redis...')
         if redis.ping():
             break
         time.sleep(1)
