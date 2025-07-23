@@ -1,11 +1,10 @@
 
 import uuid
 from http import HTTPStatus
+from typing import Callable
 
 import aiohttp
 import pytest
-from elasticsearch import AsyncElasticsearch
-from elasticsearch.helpers import async_bulk
 
 from tests.functional.settings import test_settings
 
@@ -15,20 +14,21 @@ from tests.functional.settings import test_settings
     [
         (
             {'query': 'The Star'},
-            {'status': HTTPStatus.OK, 'length': 50}
+            {'status': HTTPStatus.OK, 'length': 50},
         ),
         (
             {'query': 'Mashed potato'},
-            {'status': HTTPStatus.NOT_FOUND, 'length': 1}
-        )
-    ]
+            {'status': HTTPStatus.NOT_FOUND, 'length': 1},
+        ),
+    ],
 )
 @pytest.mark.asyncio
 async def test_search(
+    es_write_data: Callable,
     query_data: dict[str, str],
     expected_answer: dict[str, int],
 ):
-
+    """Проверка поиска кинопроизведений."""
     # Генерируем фиксированные ID для повторяющихся сущностей
     genre_action_id = str(uuid.uuid4())
     genre_scifi_id = str(uuid.uuid4())
@@ -69,26 +69,7 @@ async def test_search(
         bulk_query.append(data)
 
     # 2. Загружаем данные в ES
-    async with AsyncElasticsearch(
-        hosts=test_settings.es_host,
-        verify_certs=False,
-    ) as es_client:
-        if await es_client.indices.exists(index=test_settings.es_index):
-            await es_client.indices.delete(index=test_settings.es_index)
-        await es_client.indices.create(
-            index=test_settings.es_index,
-            **test_settings.es_index_mapping,
-        )
-
-        updated, errors = await async_bulk(
-            client=es_client,
-            actions=bulk_query,
-        )
-
-        await es_client.indices.refresh(index=test_settings.es_index)
-
-    if errors:
-        raise Exception('Ошибка записи данных в Elasticsearch')
+    await es_write_data(bulk_query)
 
     # 3. Запрашиваем данные из ES по API
     url = test_settings.service_url + '/api/v1/films/search'
