@@ -1,5 +1,6 @@
 
 import uuid
+from http import HTTPStatus
 
 import aiohttp
 import pytest
@@ -9,8 +10,24 @@ from elasticsearch.helpers import async_bulk
 from tests.functional.settings import test_settings
 
 
+@pytest.mark.parametrize(
+    'query_data, expected_answer',
+    [
+        (
+            {'query': 'The Star'},
+            {'status': HTTPStatus.OK, 'length': 50}
+        ),
+        (
+            {'query': 'Mashed potato'},
+            {'status': HTTPStatus.NOT_FOUND, 'length': 1}
+        )
+    ]
+)
 @pytest.mark.asyncio
-async def test_search():
+async def test_search(
+    query_data: dict[str, str],
+    expected_answer: dict[str, int],
+):
 
     # Генерируем фиксированные ID для повторяющихся сущностей
     genre_action_id = str(uuid.uuid4())
@@ -52,29 +69,29 @@ async def test_search():
         bulk_query.append(data)
 
     # 2. Загружаем данные в ES
-    es_client = AsyncElasticsearch(
+    async with AsyncElasticsearch(
         hosts=test_settings.es_host,
         verify_certs=False,
-    )
-    if await es_client.indices.exists(index=test_settings.es_index):
-        await es_client.indices.delete(index=test_settings.es_index)
-    await es_client.indices.create(
-        index=test_settings.es_index,
-        **test_settings.es_index_mapping,
-    )
+    ) as es_client:
+        if await es_client.indices.exists(index=test_settings.es_index):
+            await es_client.indices.delete(index=test_settings.es_index)
+        await es_client.indices.create(
+            index=test_settings.es_index,
+            **test_settings.es_index_mapping,
+        )
 
-    updated, errors = await async_bulk(client=es_client, actions=bulk_query)
+        updated, errors = await async_bulk(
+            client=es_client,
+            actions=bulk_query,
+        )
 
-    await es_client.indices.refresh(index=test_settings.es_index)
-
-    await es_client.close()
+        await es_client.indices.refresh(index=test_settings.es_index)
 
     if errors:
         raise Exception('Ошибка записи данных в Elasticsearch')
 
     # 3. Запрашиваем данные из ES по API
     url = test_settings.service_url + '/api/v1/films/search'
-    query_data = {'query': 'The Star'}
     async with aiohttp.ClientSession() as session:
         async with session.get(url, params=query_data) as response:
             body = await response.json()
@@ -82,5 +99,5 @@ async def test_search():
 
     # 4. Проверяем ответ
 
-    assert status == 200
-    assert len(body) == 50
+    assert status == expected_answer.get('status')
+    assert len(body) == expected_answer.get('length')
