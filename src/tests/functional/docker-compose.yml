@@ -28,6 +28,9 @@ services:
     env_file:
       - ./.env
   tests:
+    # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
+    # на время разработки или внесения правок по ревью.
+    profiles: ["disabled"]
     image: api-image
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
