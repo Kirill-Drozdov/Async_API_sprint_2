@@ -1,5 +1,4 @@
 
-import datetime
 import uuid
 
 import aiohttp
@@ -13,28 +12,36 @@ from tests.functional.settings import test_settings
 @pytest.mark.asyncio
 async def test_search():
 
-    # 1. Генерируем данные для ES
+    # Генерируем фиксированные ID для повторяющихся сущностей
+    genre_action_id = str(uuid.uuid4())
+    genre_scifi_id = str(uuid.uuid4())
+    director_id = str(uuid.uuid4())
+
+    # 1. Генерируем данные для ES (соответствующие схеме индекса)
     es_data = [
         {
             'id': str(uuid.uuid4()),
             'imdb_rating': 8.5,
-            'genre': ['Action', 'Sci-Fi'],
+            'genres': [
+                {'id': genre_action_id, 'name': 'Action'},
+                {'id': genre_scifi_id, 'name': 'Sci-Fi'}
+            ],
             'title': 'The Star',
             'description': 'New World',
-            'director': ['Stan'],
+            'directors_names': ['Stan'],
             'actors_names': ['Ann', 'Bob'],
             'writers_names': ['Ben', 'Howard'],
+            'directors': [
+                {'id': director_id, 'name': 'Stan'}
+            ],
             'actors': [
                 {'id': 'ef86b8ff-3c82-4d31-ad8e-72b69f4e3f95', 'name': 'Ann'},
                 {'id': 'fb111f22-121e-44a7-b78f-b19191810fbf', 'name': 'Bob'}
             ],
             'writers': [
                 {'id': 'caf76c67-c0fe-477e-8766-3ab3ff2574b5', 'name': 'Ben'},
-                {'id': 'b45bd7bc-2e16-46d5-b125-983d356768c6', 'name': 'Howard'}
-            ],
-            'created_at': datetime.datetime.now().isoformat(),
-            'updated_at': datetime.datetime.now().isoformat(),
-            'film_work_type': 'movie'
+                {'id': 'b45bd7bc-2e16-46d5-b125-983d356768c6', 'name': 'Howard'}  # noqa
+            ]
         } for _ in range(60)
     ]
 
@@ -64,15 +71,12 @@ async def test_search():
         raise Exception('Ошибка записи данных в Elasticsearch')
 
     # 3. Запрашиваем данные из ES по API
-
-    session = aiohttp.ClientSession()
     url = test_settings.service_url + '/api/v1/films/search'
-    query_data = {'search': 'The Star'}
-    async with session.get(url, params=query_data) as response:
-        body = await response.json()
-        headers = response.headers
-        status = response.status
-    await session.close()
+    query_data = {'query': 'The Star'}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=query_data) as response:
+            body = await response.json()
+            status = response.status
 
     # 4. Проверяем ответ
 
