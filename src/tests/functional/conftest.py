@@ -9,6 +9,8 @@ import pytest
 
 from tests.functional.settings import test_settings
 
+BASE_API_V1_URL: str = '/api/v1'
+
 
 @pytest.fixture(scope='session')
 def event_loop():

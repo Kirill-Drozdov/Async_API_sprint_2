@@ -5,6 +5,7 @@ from typing import Callable
 
 import pytest
 
+from tests.functional.conftest import BASE_API_V1_URL
 from tests.functional.settings import test_settings
 
 
@@ -76,7 +77,7 @@ async def test_search(
     await es_write_data(bulk_query)
 
     # 3. Запрашиваем данные из ES по API
-    url = test_settings.service_url + '/api/v1/films/search'
+    url = test_settings.service_url + f'{BASE_API_V1_URL}/films/search'
 
     body, status = await make_get_request(url, query_data)
 

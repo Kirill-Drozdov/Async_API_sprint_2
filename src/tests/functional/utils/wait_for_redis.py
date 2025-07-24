@@ -10,7 +10,7 @@ if __name__ == '__main__':
         port=test_settings.redis_port,
     )
     while True:
-        print('Test Redis...')
+        print('Check Redis connection...')
         if redis.ping():
             break
         time.sleep(1)
