@@ -17,6 +17,10 @@ from tests.functional.settings import test_settings
             {'status': HTTPStatus.OK, 'length': 50},
         ),
         (
+            {'query': 'The Star', 'page[number]': 2, 'page[size]': 10},
+            {'status': HTTPStatus.OK, 'length': 10},
+        ),
+        (
             {'query': 'Mashed potato'},
             {'status': HTTPStatus.NOT_FOUND, 'length': 1},
         ),
