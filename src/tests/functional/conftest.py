@@ -14,6 +14,15 @@ BASE_API_V1_URL: str = '/api/v1'
 MAX_FILMS_DATA_SIZE: int = 60
 
 
+async def _delete_index_from_es_if_exists(
+    es_client: AsyncElasticsearch,
+    index: str,
+) -> None:
+    """Удаляет индекс из ElasticSearch, если он существует."""
+    if await es_client.indices.exists(index=index):
+        await es_client.indices.delete(index=index)
+
+
 @pytest.fixture(scope='session')
 def event_loop():
     loop = asyncio.get_event_loop()
@@ -42,8 +51,10 @@ async def aiohttp_session():
 def es_delete_index(es_client: AsyncElasticsearch) -> Callable:
     """Фикстура для для удаления индекса из ElasticSearch."""
     async def inner(index: str):
-        if await es_client.indices.exists(index=index):
-            await es_client.indices.delete(index=index)
+        await _delete_index_from_es_if_exists(
+            es_client=es_client,
+            index=index,
+        )
     return inner
 
 
@@ -51,8 +62,10 @@ def es_delete_index(es_client: AsyncElasticsearch) -> Callable:
 def es_write_data(es_client: AsyncElasticsearch) -> Callable:
     """Фикстура для загрузки данных в ElasticSearch."""
     async def inner(data: list[dict], index: str, index_mapping: dict):
-        if await es_client.indices.exists(index=index):
-            await es_client.indices.delete(index=index)
+        await _delete_index_from_es_if_exists(
+            es_client=es_client,
+            index=index,
+        )
         await es_client.indices.create(
             index=index,
             **index_mapping,
