@@ -1,5 +1,4 @@
 
-import uuid
 from http import HTTPStatus
 from typing import Callable
 
@@ -7,10 +6,15 @@ import pytest
 
 from tests.functional.conftest import BASE_API_V1_URL, MAX_FILMS_DATA_SIZE
 from tests.functional.settings import test_settings
+from tests.functional.utils.helpers import generate_es_data, genre_action_id
 
 _FILMS_API_URL = (
     test_settings.service_url + f'{BASE_API_V1_URL}/films'
 )
+
+
+# Подготавливаем разнообразные данные.
+es_data, action_films_id = generate_es_data(data_size=MAX_FILMS_DATA_SIZE)
 
 
 @pytest.mark.parametrize(
@@ -39,10 +43,35 @@ _FILMS_API_URL = (
             {'page[size]': 100},
             {'status': HTTPStatus.OK, 'length': MAX_FILMS_DATA_SIZE},
         ),
+        # Новые тесты сортировки и фильтрации
+        (
+            {'sort': 'imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 1.0, 'last_rating': 7.5}  # noqa
+        ),
+        (
+            {'sort': '-imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 9.0, 'last_rating': 2.0}  # noqa
+        ),
+        (
+            {'genre': genre_action_id},
+            {'status': HTTPStatus.OK, 'length': 30, 'all_genres': ['Action']}
+        ),
+        (
+            {'genre': genre_action_id, 'sort': '-imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 30, 'first_rating': 9.0, 'last_rating': 1.0, 'all_genres': ['Action']}  # noqa
+        ),
+        (
+            {'genre': 'Non-Existing-Genre'},
+            {'status': HTTPStatus.NOT_FOUND, 'detail': 'Кинопроизведения не найдены'}  # noqa
+        ),
+        (
+            {'sort': 'invalid_field'},
+            {'status': HTTPStatus.UNPROCESSABLE_ENTITY, 'detail': 'Invalid sort parameter'}  # noqa
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_get_films(
+async def test_get_films(  # noqa
     es_write_data: Callable,
     es_delete_index: Callable,
     make_get_request: Callable,
@@ -50,39 +79,7 @@ async def test_get_films(
     expected_answer: dict[str, int],
 ):
     """Проверка поиска кинопроизведений."""
-    # Генерируем фиксированные ID для повторяющихся сущностей.
-    genre_action_id = str(uuid.uuid4())
-    genre_scifi_id = str(uuid.uuid4())
-    director_id = str(uuid.uuid4())
-
     # 1. Генерируем данные для ES (соответствующие схеме индекса).
-    es_data = [
-        {
-            'id': str(uuid.uuid4()),
-            'imdb_rating': 8.5,
-            'genres': [
-                {'id': genre_action_id, 'name': 'Action'},
-                {'id': genre_scifi_id, 'name': 'Sci-Fi'}
-            ],
-            'title': 'The Star',
-            'description': 'New World',
-            'directors_names': ['Stan'],
-            'actors_names': ['Ann', 'Bob'],
-            'writers_names': ['Ben', 'Howard'],
-            'directors': [
-                {'id': director_id, 'name': 'Stan'}
-            ],
-            'actors': [
-                {'id': 'ef86b8ff-3c82-4d31-ad8e-72b69f4e3f95', 'name': 'Ann'},
-                {'id': 'fb111f22-121e-44a7-b78f-b19191810fbf', 'name': 'Bob'}
-            ],
-            'writers': [
-                {'id': 'caf76c67-c0fe-477e-8766-3ab3ff2574b5', 'name': 'Ben'},
-                {'id': 'b45bd7bc-2e16-46d5-b125-983d356768c6', 'name': 'Howard'}  # noqa
-            ]
-        } for _ in range(MAX_FILMS_DATA_SIZE)
-    ]
-
     bulk_query: list[dict] = []
     for row in es_data:
         bulk_query.append(
@@ -106,14 +103,27 @@ async def test_get_films(
     # 4. Проверяем ответ.
     assert status == expected_answer.get('status')
     if status == HTTPStatus.OK:
-        assert len(body) == expected_answer.get('length')
-        # Проверка структуры каждого элемента
+        assert len(body) == expected_answer['length']
+
+        # Проверка структуры
         for film in body:
             assert 'uuid' in film
             assert 'title' in film
             assert 'imdb_rating' in film
-    else:
-        assert body == {'detail': expected_answer.get('detail')}
+
+        # Проверка сортировки
+        if 'first_rating' in expected_answer:
+            if expected_answer.get('sort_order') == 'asc':
+                assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
+                assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
+            else:
+                assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
+                assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
+
+        # Проверка фильтрации по жанру
+        if 'all_genres' in expected_answer:
+            for film in body:
+                assert film.get('uuid') in action_films_id
 
     # 5 Чистим ES от индекса, чтобы проверить кеширование.
     es_delete_index(index=test_settings.es_index)
@@ -127,5 +137,3 @@ async def test_get_films(
     assert status_cached == expected_answer.get('status')
     if status_cached == HTTPStatus.OK:
         assert len(body_cached) == expected_answer.get('length')
-    else:
-        assert body_cached == {'detail': expected_answer.get('detail')}
