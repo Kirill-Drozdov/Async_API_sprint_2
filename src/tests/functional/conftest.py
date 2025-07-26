@@ -11,6 +11,8 @@ from tests.functional.settings import test_settings
 
 BASE_API_V1_URL: str = '/api/v1'
 
+MAX_FILMS_DATA_SIZE: int = 60
+
 
 @pytest.fixture(scope='session')
 def event_loop():
