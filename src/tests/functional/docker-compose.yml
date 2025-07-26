@@ -1,0 +1,46 @@
+services:
+  elasticsearch:
+    image: elasticsearch:8.6.2
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+  redis:
+    image: redis:5.0.4
+    ports:
+      - "6379:6379"
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel notice
+  api:
+    build:
+      context: ../../.
+    ports:
+      - "8000:8000"
+    image: api-image
+    depends_on:
+      - redis
+      - elasticsearch
+    env_file:
+      - ./.env
+  tests:
+    # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
+    # на время разработки или внесения правок по ревью.
+    profiles: ["disabled"]
+    image: api-image
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      sh -c "pip install -r tests/functional/requirements.txt
+      && python3 -m tests.functional.utils.wait_for_es
+      && python3 -m tests.functional.utils.wait_for_redis
+      && pytest tests/functional/src"
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+  redis_data:
