@@ -103,7 +103,7 @@ async def test_get_films(  # noqa
     # 4. Проверяем ответ.
     assert status == expected_answer.get('status')
     if status == HTTPStatus.OK:
-        assert len(body) == expected_answer['length']
+        assert len(body) == expected_answer.get('length')
 
         # Проверка структуры
         for film in body:
@@ -137,3 +137,63 @@ async def test_get_films(  # noqa
     assert status_cached == expected_answer.get('status')
     if status_cached == HTTPStatus.OK:
         assert len(body_cached) == expected_answer.get('length')
+
+
+@pytest.mark.asyncio
+async def test_empty_index(
+    es_write_data: Callable,
+    es_delete_index: Callable,
+    make_get_request: Callable
+):
+    """Проверка пустой базы данных."""
+    # Создаем пустой индекс.
+    await es_write_data(
+        data=[],
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
+    query_params = {'page[number]': 3, 'page[size]': 7}
+    body, status = await make_get_request(_FILMS_API_URL, query_params)
+    assert status == HTTPStatus.NOT_FOUND
+    assert body.get('detail') == 'Кинопроизведения не найдены'
+
+    # Проверка кеширования.
+    await es_delete_index(index=test_settings.es_index)
+    body_cached, status_cached = await make_get_request(
+        _FILMS_API_URL,
+        query_params,
+    )
+    assert status_cached == HTTPStatus.NOT_FOUND
+    assert body_cached.get('detail') == 'Кинопроизведения не найдены'
+
+
+@pytest.mark.parametrize(
+    "query_data, expected_status",
+    [
+        (
+            {'sort': 'invalid_field'}, HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        (
+            {'page[size]': 0}, HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        (
+            {'page[size]': 101}, HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        (
+            {'page[number]': 0}, HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        (
+            {'page[number]': -1}, HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+    ]
+)
+@pytest.mark.asyncio
+async def test_validation_errors(
+    make_get_request: Callable,
+    query_data: dict,
+    expected_status: int
+):
+    """Проверка ошибок валидации параметров."""
+    body, status = await make_get_request(_FILMS_API_URL, query_data)
+    assert status == expected_status
+    assert 'detail' in body
