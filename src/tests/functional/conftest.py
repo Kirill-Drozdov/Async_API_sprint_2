@@ -23,6 +23,7 @@ def event_loop():
 
 @pytest.fixture(name='es_client', scope='session')
 async def es_client():
+    """Фикстура для предоставления клиента ES."""
     async with AsyncElasticsearch(
         hosts=test_settings.es_host,
         verify_certs=False,
@@ -32,6 +33,7 @@ async def es_client():
 
 @pytest.fixture(name='aiohttp_session', scope='session')
 async def aiohttp_session():
+    """Фикстура для предоставления клиентской сессии."""
     async with aiohttp.ClientSession() as session:
         yield session
 
@@ -68,7 +70,7 @@ def es_write_data(es_client: AsyncElasticsearch) -> Callable:
 
 @pytest.fixture(name='make_get_request')
 def make_get_request(aiohttp_session: aiohttp.ClientSession) -> Callable:
-    """Фикстура для загрузки данных в ElasticSearch."""
+    """Фикстура для выполнения запроса к API."""
     async def inner(url: str, query_data: dict[str, str]):
         async with aiohttp_session.get(url, params=query_data) as response:
             body = await response.json()
