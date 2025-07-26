@@ -1,6 +1,7 @@
 
 from http import HTTPStatus
 from typing import Callable
+import uuid
 
 import pytest
 
@@ -197,3 +198,114 @@ async def test_validation_errors(
     body, status = await make_get_request(_FILMS_API_URL, query_data)
     assert status == expected_status
     assert 'detail' in body
+
+
+@pytest.mark.asyncio
+async def test_film_details(
+    es_write_data: Callable,
+    es_delete_index: Callable,
+    make_get_request: Callable,
+):
+    """Проверка получения детальной информации о фильме."""
+    film_id = str(uuid.uuid4())
+    film_detail = {
+        'id': film_id,
+        'imdb_rating': 8.5,
+        'genres': [
+            {'id': str(uuid.uuid4()), 'name': 'Action'},
+            {'id': str(uuid.uuid4()), 'name': 'Sci-Fi'}
+        ],
+        'title': 'The Star',
+        'description': 'New World',
+        'directors_names': ['Stan'],
+        'actors_names': ['Ann', 'Bob'],
+        'writers_names': ['Ben', 'Howard'],
+        'directors': [
+            {'id': str(uuid.uuid4()), 'name': 'Stan'}
+        ],
+        'actors': [
+            {'id': str(uuid.uuid4()), 'name': 'Ann'},
+            {'id': str(uuid.uuid4()), 'name': 'Bob'}
+        ],
+        'writers': [
+            {'id': str(uuid.uuid4()), 'name': 'Ben'},
+            {'id': str(uuid.uuid4()), 'name': 'Howard'}
+        ]
+    }
+    bulk_query = [
+        {
+            '_index': test_settings.es_index,
+            '_id': film_id,
+            '_source': film_detail,
+        }
+    ]
+    await es_write_data(
+        data=bulk_query,
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
+
+    url = f'{_FILMS_API_URL}/{film_id}'
+
+    # Первый запрос.
+    body, status = await make_get_request(url, {})
+
+    # Проверка ответа.
+    assert status == HTTPStatus.OK
+
+    # Проверка полной структуры ответа.
+    assert body['uuid'] == film_detail['id']
+    assert body['title'] == film_detail['title']
+    assert body['imdb_rating'] == film_detail['imdb_rating']
+    assert body['description'] == film_detail['description']
+
+    # Проверка вложенных структур.
+    assert len(body['genres']) == len(film_detail['genres'])
+    assert len(body['actors']) == len(film_detail['actors'])
+    assert len(body['writers']) == len(film_detail['writers'])
+    assert len(body['directors']) == len(film_detail['directors'])
+
+    # Проверка преобразования полей.
+    for i, genre in enumerate(film_detail['genres']):
+        assert body['genres'][i]['uuid'] == genre['id']
+        assert body['genres'][i]['name'] == genre['name']
+
+    for i, actor in enumerate(film_detail['actors']):
+        assert body['actors'][i]['uuid'] == actor['id']
+        assert body['actors'][i]['full_name'] == actor['name']
+
+    await es_delete_index(index=test_settings.es_index)
+    body_cached, status_cached = await make_get_request(url, {})
+
+    assert status_cached == HTTPStatus.OK
+    assert body_cached['uuid'] == film_detail['id']
+
+
+@pytest.mark.asyncio
+async def test_film_details_empty_index(
+    es_write_data: Callable,
+    es_delete_index: Callable,
+    make_get_request: Callable,
+):
+    """Проверка получения информации из пустого индекса."""
+    film_id = str(uuid.uuid4())
+    await es_write_data(
+        data=[],
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
+    url = f'{_FILMS_API_URL}/{film_id}'
+
+    # Первый запрос.
+    body, status = await make_get_request(url, {})
+
+    # Проверка ответа.
+    assert status == HTTPStatus.NOT_FOUND
+    assert body.get('detail') == 'Кинопроизведение не найдено'
+
+    # Проверка кеширования.
+    await es_delete_index(index=test_settings.es_index)
+    body_cached, status_cached = await make_get_request(url, {})
+
+    assert status_cached == HTTPStatus.NOT_FOUND
+    assert body_cached.get('detail') == 'Кинопроизведение не найдено'
