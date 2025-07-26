@@ -29,17 +29,18 @@ from tests.functional.settings import test_settings
 @pytest.mark.asyncio
 async def test_search(
     es_write_data: Callable,
+    es_delete_index: Callable,
     make_get_request: Callable,
     query_data: dict[str, str],
     expected_answer: dict[str, int],
 ):
     """Проверка поиска кинопроизведений."""
-    # Генерируем фиксированные ID для повторяющихся сущностей
+    # Генерируем фиксированные ID для повторяющихся сущностей.
     genre_action_id = str(uuid.uuid4())
     genre_scifi_id = str(uuid.uuid4())
     director_id = str(uuid.uuid4())
 
-    # 1. Генерируем данные для ES (соответствующие схеме индекса)
+    # 1. Генерируем данные для ES (соответствующие схеме индекса).
     es_data = [
         {
             'id': str(uuid.uuid4()),
@@ -77,14 +78,27 @@ async def test_search(
             }
         )
 
-    # 2. Загружаем данные в ES
-    await es_write_data(bulk_query)
+    # 2. Загружаем данные в ES.
+    await es_write_data(
+        data=bulk_query,
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
 
-    # 3. Запрашиваем данные из ES по API
+    # 3. Запрашиваем данные из ES по API.
     url = test_settings.service_url + f'{BASE_API_V1_URL}/films/search'
 
     body, status = await make_get_request(url, query_data)
 
-    # 4. Проверяем ответ
+    # 4. Проверяем ответ.
+    assert status == expected_answer.get('status')
+    assert len(body) == expected_answer.get('length')
+
+    # 5 Чистим ES от индекса, чтобы проверить кеширование.
+    es_delete_index(index=test_settings.es_index)
+
+    body, status = await make_get_request(url, query_data)
+
+    # 6. Проверяем закешированный ответ.
     assert status == expected_answer.get('status')
     assert len(body) == expected_answer.get('length')

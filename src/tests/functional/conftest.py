@@ -34,23 +34,30 @@ async def aiohttp_session():
         yield session
 
 
+@pytest.fixture(name='es_delete_index')
+def es_delete_index(es_client: AsyncElasticsearch) -> Callable:
+    """Фикстура для для удаления индекса из ElasticSearch."""
+    async def inner(index: str):
+        if await es_client.indices.exists(index=index):
+            await es_client.indices.delete(index=index)
+    return inner
+
+
 @pytest.fixture(name='es_write_data')
 def es_write_data(es_client: AsyncElasticsearch) -> Callable:
     """Фикстура для загрузки данных в ElasticSearch."""
-    async def inner(data: list[dict]):
-        if await es_client.indices.exists(index=test_settings.es_index):
-            await es_client.indices.delete(index=test_settings.es_index)
+    async def inner(data: list[dict], index: str, index_mapping: dict):
+        if await es_client.indices.exists(index=index):
+            await es_client.indices.delete(index=index)
         await es_client.indices.create(
-            index=test_settings.es_index,
-            **test_settings.es_index_mapping,
+            index=index,
+            **index_mapping,
         )
-
         _, errors = await async_bulk(
             client=es_client,
             actions=data,
         )
-
-        await es_client.indices.refresh(index=test_settings.es_index)
+        await es_client.indices.refresh(index=index)
 
         if errors:
             raise Exception('Ошибка записи данных в Elasticsearch')
