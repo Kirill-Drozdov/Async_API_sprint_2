@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     # Время кеширования запросов. 5 мин. по умолчанию.
     film_cache_expire_in_seconds: int = 300
+    genre_cache_expire_in_seconds: int = 300
     # Настройки Elasticsearch.
     elastic_host: str = '127.0.0.1'
     elastic_port: int = 9200

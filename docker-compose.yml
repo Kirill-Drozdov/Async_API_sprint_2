@@ -1,8 +1,8 @@
 services:
   db:
     image: postgres:16.0
-    ports:
-      - "5433:5433"
+    # ports:
+      # - "5433:5433"
     volumes:
       - ./postgres_to_es/etl_data:/docker-entrypoint-initdb.d
       - postgres_data:/var/lib/postgresql/data
@@ -25,12 +25,14 @@ services:
       - elasticsearch
     env_file:
       - ./postgres_to_es/.env
-  # redis:
-  #   image: redis:5.0.4
-  #   container_name: redis
-  #   volumes:
-  #     - redis_data:/data
-  #   command: redis-server --save 60 1 --loglevel notice
+  redis:
+    image: redis:5.0.4
+    ports:
+      - "6379:6379"
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel notice
   # movie_api:
   #   # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
   #   # на время разработки или внесения правок по ревью.
