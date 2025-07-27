@@ -81,6 +81,46 @@ class GenreService:
 
         return genres
 
+    async def get_genre_by_id(self, genre_id: str) -> Genre | None:
+        """Получить жанр по уникальному идентификатору.
+
+        Args:
+            genre_id (str): уникальный идентификатор.
+
+        Returns:
+            Optional[Genre]: жанр, если он нашелся в БД.
+        """
+        # Пытаемся получить данные из кеша, потому что оно работает быстрее.
+        genre = await self._get_genre_from_cache(genre_id)
+        if genre:
+            return genre
+        # Если жанра нет в кеше, то ищем его в Elasticsearch.
+        genre = await self._get_genre_from_elastic(genre_id)
+        if not genre:
+            # Если он отсутствует в Elasticsearch, значит, жанра вообще
+            # нет в базе.
+            return None
+        # Сохраняем жанр в кеш.
+        await self._put_genre_to_cache(genre)
+
+        return genre
+
+    @async_backoff()
+    async def _get_genre_from_elastic(self, genre_id: str) -> Genre | None:
+        """Возвращает жанр из ES.
+
+        Args:
+            genre_id (str): уникальный идентификатор.
+
+        Returns:
+            Кинопроизведение в виде объекта Genre, если он был найден.
+        """
+        try:
+            doc = await self._elastic.get(index=self._es_index, id=genre_id)
+        except NotFoundError:
+            return None
+        return Genre(**doc['_source'])
+
     @async_backoff()
     async def __get_row_genres_from_elastic(
         self,
@@ -125,6 +165,52 @@ class GenreService:
                 f'Ошибка при получении данных из ES: {error}',
             )
             return genres
+
+    @async_backoff()
+    async def __get_row_genre_from_redis(self, genre_id: str):
+        return await self._redis.get(genre_id)
+
+    async def _get_genre_from_cache(self, genre_id: str) -> Genre | None:
+        """Пытается получить данные о жанре из кеша.
+
+        Args:
+            genre_id (str): уникальный идентификатор.
+
+        Returns:
+            Жанр, если он был найден в кеше.
+        """
+        try:
+            data = await self.__get_row_genre_from_redis(genre_id=genre_id)
+            if not data:
+                return None
+            genre_data = json.loads(data)
+            return Genre.model_validate(genre_data)
+        except Exception as error:
+            self._logger.error(
+                f'Ошибка при получении данных из кеша: {error}',
+            )
+            return None
+
+    @async_backoff()
+    async def __put_genre_to_redis(self, genre: Genre):
+        await self._redis.set(
+            genre.id,
+            genre.model_dump_json(by_alias=False),
+            _GENRE_CACHE_EXPIRE_IN_SECONDS,
+        )
+
+    async def _put_genre_to_cache(self, genre: Genre):
+        """Кеширует результат запроса на поиск жанра.
+
+        Args:
+            genre (Genre): жанр.
+        """
+        try:
+            await self.__put_genre_to_redis(genre=genre)
+        except Exception as error:
+            self._logger.error(
+                f'Ошибка при кешировании результата: {error}',
+            )
 
     @async_backoff()
     async def __get_row_genres_from_redis(self, cache_key: str):
