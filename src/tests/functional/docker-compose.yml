@@ -17,6 +17,9 @@ services:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel notice
   api:
+    # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
+    # на время разработки или внесения правок по ревью.
+    profiles: ["disabled"]
     build:
       context: ../../.
     ports:
