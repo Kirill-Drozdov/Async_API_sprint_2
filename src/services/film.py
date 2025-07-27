@@ -4,11 +4,12 @@ import json
 import logging
 
 from elastic_transport import ObjectApiResponse
-from elasticsearch import AsyncElasticsearch, NotFoundError
+from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 from fastapi import Depends
 from redis.asyncio import Redis
 
 from core.config import settings
+from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import Film, FilmShort
@@ -24,6 +25,7 @@ class FilmService:
         self._redis = redis
         self._elastic = elastic
         self._logger = logging.getLogger(__name__)
+        self._es_index = 'movies'
 
     @staticmethod
     def __generate_base_body(
@@ -209,6 +211,10 @@ class FilmService:
 
         return films
 
+    @async_backoff()
+    async def __get_row_film_from_redis(self, film_id: str):
+        return await self._redis.get(film_id)
+
     async def _get_film_from_cache(self, film_id: str) -> Film | None:
         """Пытается получить данные о кинопроизведении из кеша.
 
@@ -219,7 +225,7 @@ class FilmService:
             Кинопроизведение, если оно было найдено в кеше.
         """
         try:
-            data = await self._redis.get(film_id)
+            data = await self.__get_row_film_from_redis(film_id=film_id)
             if not data:
                 return None
             film_data = json.loads(data)
@@ -229,6 +235,10 @@ class FilmService:
                 f'Ошибка при получении данных из кеша: {error}',
             )
             return None
+
+    @async_backoff()
+    async def __get_row_films_from_redis(self, cache_key: str):
+        return await self._redis.get(cache_key)
 
     async def _get_films_from_cache(
         self,
@@ -244,7 +254,9 @@ class FilmService:
             Список кинопроизведений в виде объекта FilmShort.
         """
         try:
-            cached_data = await self._redis.get(cache_key)
+            cached_data = await self.__get_row_films_from_redis(
+                cache_key=cache_key,
+            )
             if cached_data:
                 films_data = json.loads(cached_data)
                 return [
@@ -256,6 +268,18 @@ class FilmService:
                 f'Ошибка при получении данных из кеша: {error}',
             )
         return None
+
+    @async_backoff()
+    async def __put_fims_to_redis(
+        self,
+        cache_key: str,
+        films_data: list[dict],
+    ) -> None:
+        await self._redis.setex(
+            cache_key,
+            _FILM_CACHE_EXPIRE_IN_SECONDS,
+            json.dumps(films_data),
+        )
 
     async def _put_films_to_cache(
         self,
@@ -273,15 +297,22 @@ class FilmService:
         """
         try:
             films_data = [film.model_dump(by_alias=False) for film in films]
-            await self._redis.setex(
-                cache_key,
-                _FILM_CACHE_EXPIRE_IN_SECONDS,
-                json.dumps(films_data),
+            await self.__put_fims_to_redis(
+                cache_key=cache_key,
+                films_data=films_data,
             )
         except Exception as error:
             self._logger.error(
                 f'Ошибка при кешировании результата: {error}',
             )
+
+    @async_backoff()
+    async def __put_film_to_redis(self, film: Film):
+        await self._redis.set(
+            film.id,
+            film.model_dump_json(by_alias=False),
+            _FILM_CACHE_EXPIRE_IN_SECONDS,
+        )
 
     async def _put_film_to_cache(self, film: Film):
         """Кеширует результат запроса на поиск кинопроизведения.
@@ -290,16 +321,13 @@ class FilmService:
             film (Film): кинопроизведение.
         """
         try:
-            await self._redis.set(
-                film.id,
-                film.model_dump_json(by_alias=False),
-                _FILM_CACHE_EXPIRE_IN_SECONDS,
-            )
+            await self.__put_film_to_redis(film=film)
         except Exception as error:
             self._logger.error(
                 f'Ошибка при кешировании результата: {error}',
             )
 
+    @async_backoff()
     async def _get_film_from_elastic(self, film_id: str) -> Film | None:
         """Возвращает кинопроизведение из ES.
 
@@ -310,10 +338,24 @@ class FilmService:
             Кинопроизведение в виде объекта Film, если он был найден.
         """
         try:
-            doc = await self._elastic.get(index='movies', id=film_id)
+            doc = await self._elastic.get(index=self._es_index, id=film_id)
         except NotFoundError:
             return None
         return Film(**doc['_source'])
+
+    @async_backoff()
+    async def __get_row_films_from_elastic(
+        self,
+        body: dict,
+        index: str,
+    ) -> ObjectApiResponse | None:
+        try:
+            return await self._elastic.search(
+                index=index,
+                body=body,
+            )
+        except (BadRequestError, NotFoundError):
+            return None
 
     async def _get_films_from_elastic(
         self,
@@ -357,11 +399,13 @@ class FilmService:
             else:
                 body['query'] = {'match_all': {}}
 
-            # Выполняем запрос к Elasticsearch.
-            response = await self._elastic.search(
-                index='movies',
+            response = await self.__get_row_films_from_elastic(
                 body=body,
+                index=self._es_index,
             )
+            if response is None:
+                return films
+
             return self.__serialize_es_response(
                 response=response,
                 films=films,
@@ -402,10 +446,13 @@ class FilmService:
             }
 
             # Выполняем запрос к Elasticsearch.
-            response = await self._elastic.search(
-                index='movies',
+            response = await self.__get_row_films_from_elastic(
                 body=body,
+                index=self._es_index,
             )
+            if response is None:
+                return films
+
             return self.__serialize_es_response(
                 response=response,
                 films=films,
