@@ -3,11 +3,13 @@ import hashlib
 import json
 import logging
 
-from elasticsearch import AsyncElasticsearch, NotFoundError
+from elastic_transport import ObjectApiResponse
+from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 from fastapi import Depends
 from redis.asyncio import Redis
 
 from core.config import settings
+from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import Film, FilmShort
@@ -23,6 +25,73 @@ class FilmService:
         self._redis = redis
         self._elastic = elastic
         self._logger = logging.getLogger(__name__)
+        self._es_index = 'movies'
+
+    @staticmethod
+    def __generate_base_body(
+        page_size: int,
+        page_number: int,
+    ) -> dict:
+        """Формируем базовое тело запроса к Elasticsearch.
+
+        Args:
+            page_size: Количество элементов на странице.
+            page_number: Номер страницы (начинается с 1).
+
+        Returns:
+            Тело запроса к ES.
+        """
+        return {
+            'from': (page_number - 1) * page_size,
+            'size': page_size,
+            '_source': ['id', 'title', 'imdb_rating'],
+        }
+
+    @staticmethod
+    def __generate_cache_key(  # noqa
+        page_size: int,
+        page_number: int,
+        sort_field: str | None = None,
+        genre: str | None = None,
+        sort_order: str | None = None,
+        query: str | None = None,
+    ) -> str:
+        """Генерирует уникальный ключ для кэширования запроса."""
+        cache_data = {
+            'query': query,
+            'sort_field': sort_field,
+            'genre': genre,
+            'sort_order': sort_order,
+            'page_size': page_size,
+            'page_number': page_number,
+        }
+        cache_str = json.dumps(cache_data, sort_keys=True)
+        return f'films:{hashlib.md5(cache_str.encode()).hexdigest()}'
+
+    @staticmethod
+    def __serialize_es_response(
+        response: ObjectApiResponse,
+        films: list,
+    ) -> list[FilmShort]:
+        """Преобразуем результат ответа от ES в объекты FilmShort.
+
+        Args:
+            response (ObjectApiResponse): Результат ответа от ES.
+            films (list): пустой список для заполнения фильмами.
+
+        Returns:
+            list[FilmShort]: Список сериализованных объектов.
+        """
+
+        for hit in response['hits']['hits']:
+            source = hit['_source']
+            film = FilmShort(
+                id=source['id'],
+                title=source['title'],
+                imdb_rating=source['imdb_rating'],
+            )
+            films.append(film)
+        return films
 
     async def get_film_by_id(self, film_id: str) -> Film | None:
         """Получить кинопроизведение по уникальному идентификатору.
@@ -84,12 +153,16 @@ class FilmService:
         if cached_result:
             return cached_result
 
-        films = await self._get_films_from_elastic(
-            sort_field=sort_field,
-            genre=genre,
-            sort_order=sort_order,
+        body = self.__generate_base_body(
             page_size=page_size,
             page_number=page_number,
+
+        )
+        films = await self._get_films_from_elastic(
+            sort_field=sort_field,
+            sort_order=sort_order,
+            genre=genre,
+            body=body,
         )
 
         # Сохраняем в кэш.
@@ -125,36 +198,22 @@ class FilmService:
         if cached_result:
             return cached_result
 
-        films = await self._get_films_from_elastic_by_title(
-            query=query,
+        body = self.__generate_base_body(
             page_size=page_size,
             page_number=page_number,
+        )
+        films = await self._get_films_from_elastic_by_title(
+            query=query,
+            body=body,
         )
         # Сохраняем в кэш.
         await self._put_films_to_cache(cache_key, films)
 
         return films
 
-    def __generate_cache_key(  # noqa
-        self,
-        page_size: int,
-        page_number: int,
-        sort_field: str | None = None,
-        genre: str | None = None,
-        sort_order: str | None = None,
-        query: str | None = None,
-    ) -> str:
-        """Генерирует уникальный ключ для кэширования запроса."""
-        cache_data = {
-            'query': query,
-            'sort_field': sort_field,
-            'genre': genre,
-            'sort_order': sort_order,
-            'page_size': page_size,
-            'page_number': page_number,
-        }
-        cache_str = json.dumps(cache_data, sort_keys=True)
-        return f'films:{hashlib.md5(cache_str.encode()).hexdigest()}'
+    @async_backoff()
+    async def __get_row_film_from_redis(self, film_id: str):
+        return await self._redis.get(film_id)
 
     async def _get_film_from_cache(self, film_id: str) -> Film | None:
         """Пытается получить данные о кинопроизведении из кеша.
@@ -166,7 +225,7 @@ class FilmService:
             Кинопроизведение, если оно было найдено в кеше.
         """
         try:
-            data = await self._redis.get(film_id)
+            data = await self.__get_row_film_from_redis(film_id=film_id)
             if not data:
                 return None
             film_data = json.loads(data)
@@ -176,6 +235,10 @@ class FilmService:
                 f'Ошибка при получении данных из кеша: {error}',
             )
             return None
+
+    @async_backoff()
+    async def __get_row_films_from_redis(self, cache_key: str):
+        return await self._redis.get(cache_key)
 
     async def _get_films_from_cache(
         self,
@@ -191,7 +254,9 @@ class FilmService:
             Список кинопроизведений в виде объекта FilmShort.
         """
         try:
-            cached_data = await self._redis.get(cache_key)
+            cached_data = await self.__get_row_films_from_redis(
+                cache_key=cache_key,
+            )
             if cached_data:
                 films_data = json.loads(cached_data)
                 return [
@@ -203,6 +268,18 @@ class FilmService:
                 f'Ошибка при получении данных из кеша: {error}',
             )
         return None
+
+    @async_backoff()
+    async def __put_fims_to_redis(
+        self,
+        cache_key: str,
+        films_data: list[dict],
+    ) -> None:
+        await self._redis.setex(
+            cache_key,
+            _FILM_CACHE_EXPIRE_IN_SECONDS,
+            json.dumps(films_data),
+        )
 
     async def _put_films_to_cache(
         self,
@@ -220,15 +297,22 @@ class FilmService:
         """
         try:
             films_data = [film.model_dump(by_alias=False) for film in films]
-            await self._redis.setex(
-                cache_key,
-                _FILM_CACHE_EXPIRE_IN_SECONDS,
-                json.dumps(films_data),
+            await self.__put_fims_to_redis(
+                cache_key=cache_key,
+                films_data=films_data,
             )
         except Exception as error:
             self._logger.error(
                 f'Ошибка при кешировании результата: {error}',
             )
+
+    @async_backoff()
+    async def __put_film_to_redis(self, film: Film):
+        await self._redis.set(
+            film.id,
+            film.model_dump_json(by_alias=False),
+            _FILM_CACHE_EXPIRE_IN_SECONDS,
+        )
 
     async def _put_film_to_cache(self, film: Film):
         """Кеширует результат запроса на поиск кинопроизведения.
@@ -237,16 +321,13 @@ class FilmService:
             film (Film): кинопроизведение.
         """
         try:
-            await self._redis.set(
-                film.id,
-                film.model_dump_json(by_alias=False),
-                _FILM_CACHE_EXPIRE_IN_SECONDS,
-            )
+            await self.__put_film_to_redis(film=film)
         except Exception as error:
             self._logger.error(
                 f'Ошибка при кешировании результата: {error}',
             )
 
+    @async_backoff()
     async def _get_film_from_elastic(self, film_id: str) -> Film | None:
         """Возвращает кинопроизведение из ES.
 
@@ -257,43 +338,48 @@ class FilmService:
             Кинопроизведение в виде объекта Film, если он был найден.
         """
         try:
-            doc = await self._elastic.get(index='movies', id=film_id)
+            doc = await self._elastic.get(index=self._es_index, id=film_id)
         except NotFoundError:
             return None
         return Film(**doc['_source'])
 
+    @async_backoff()
+    async def __get_row_films_from_elastic(
+        self,
+        body: dict,
+        index: str,
+    ) -> ObjectApiResponse | None:
+        try:
+            return await self._elastic.search(
+                index=index,
+                body=body,
+            )
+        except (BadRequestError, NotFoundError):
+            return None
+
     async def _get_films_from_elastic(
         self,
+        sort_order: str,
         sort_field: str,
         genre: str | None,
-        sort_order: str,
-        page_size: int,
-        page_number: int,
+        body: dict,
     ) -> list[FilmShort]:
         """Возвращает кинопроизведение из ES.
 
         Args:
+            sort_order: Порядок сортировки (asc/desc).
             sort_field: Поле для сортировки (imdb_rating).
             genre: UUID жанра для фильтрации (опционально).
-            sort_order: Порядок сортировки (asc/desc).
-            page_size: Количество элементов на странице.
-            page_number: Номер страницы (начинается с 1).
+            body: Тело запроса к ES.
 
         Returns:
             Кинопроизведения в виде объектов FilmShort, если они были найдены.
         """
         films = []
         try:
-            # Формируем тело запроса к Elasticsearch.
-            body = {
-                'from': (page_number - 1) * page_size,
-                'size': page_size,
-                'sort': [
-                    {sort_field: {'order': sort_order}},
-                ],
-                '_source': ['id', 'title', 'imdb_rating'],
-            }
-
+            body['sort'] = [
+                {sort_field: {'order': sort_order}},
+            ]
             # Добавляем фильтрацию по жанру, если она указана.
             if genre:
                 body['query'] = {
@@ -313,22 +399,17 @@ class FilmService:
             else:
                 body['query'] = {'match_all': {}}
 
-            # Выполняем запрос к Elasticsearch.
-            response = await self._elastic.search(
-                index='movies',
+            response = await self.__get_row_films_from_elastic(
                 body=body,
+                index=self._es_index,
             )
+            if response is None:
+                return films
 
-            # Преобразуем результат в объекты FilmShort.
-            for hit in response['hits']['hits']:
-                source = hit['_source']
-                film = FilmShort(
-                    id=source['id'],
-                    title=source['title'],
-                    imdb_rating=source['imdb_rating'],
-                )
-                films.append(film)
-            return films
+            return self.__serialize_es_response(
+                response=response,
+                films=films,
+            )
 
         except Exception as error:
             self._logger.error(
@@ -339,15 +420,13 @@ class FilmService:
     async def _get_films_from_elastic_by_title(
         self,
         query: str,
-        page_size: int,
-        page_number: int,
+        body: dict,
     ) -> list[FilmShort]:
         """Реализует поиск кинопроизведений в ES по названию фильма.
 
         Args:
             query: полное или частичное название фильма.
-            page_size: Количество элементов на странице.
-            page_number: Номер страницы (начинается с 1).
+            body: Тело запроса к ES.
 
         Returns:
             Кинопроизведения в виде объектов FilmShort, если они были найдены.
@@ -356,37 +435,28 @@ class FilmService:
         try:
             # Формируем тело запроса с поиском по частичному совпадению
             # к Elasticsearch.
-            body = {
-                'from': (page_number - 1) * page_size,
-                'size': page_size,
-                '_source': ['id', 'title', 'imdb_rating'],
-                'query': {
-                    'match': {
-                        'title': {
-                            'query': query,
-                            'fuzziness': 'AUTO',
-                            'operator': 'and',
-                        },
+            body['query'] = {
+                'match': {
+                    'title': {
+                        'query': query,
+                        'fuzziness': 'AUTO',
+                        'operator': 'and',
                     },
                 },
             }
 
             # Выполняем запрос к Elasticsearch.
-            response = await self._elastic.search(
-                index='movies',
+            response = await self.__get_row_films_from_elastic(
                 body=body,
+                index=self._es_index,
             )
+            if response is None:
+                return films
 
-            # Преобразуем результат в объекты FilmShort.
-            for hit in response['hits']['hits']:
-                source = hit['_source']
-                film = FilmShort(
-                    id=source['id'],
-                    title=source['title'],
-                    imdb_rating=source['imdb_rating'],
-                )
-                films.append(film)
-            return films
+            return self.__serialize_es_response(
+                response=response,
+                films=films,
+            )
 
         except Exception as error:
             self._logger.error(
