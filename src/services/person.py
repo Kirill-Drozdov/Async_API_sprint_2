@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import lru_cache
 import hashlib
 import json
@@ -12,7 +13,7 @@ from core.config import settings
 from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
-from models.person import PersonDetail
+from models.person import PersonDetail, PersonFilms, PersonRole
 
 _PERSON_CACHE_EXPIRE_IN_SECONDS = settings.person_cache_expire_in_seconds
 
@@ -148,7 +149,7 @@ class PersonService:
         except (BadRequestError, NotFoundError):
             return None
 
-    async def _get_persons_from_elastic_by_name(
+    async def _get_persons_from_elastic_by_name(  # noqa
         self,
         query: str,
         body: dict,
@@ -184,16 +185,116 @@ class PersonService:
             if response is None:
                 return persons
 
-            return self.__serialize_es_response(
-                response=response,
-                persons=persons,
-            )
+            persons = self.__serialize_es_response(response, persons)
+
+            if not persons:
+                return persons
+
+            # Собираем ID всех найденных персон
+            person_ids = [person.id for person in persons]
+
+            # Запрашиваем фильмы, где участвуют найденные персоны
+            movies_response = await self._get_movies_by_person_ids(person_ids)
+            if not movies_response:
+                return persons
+
+            # Создаем промежуточную структуру:
+            # person_id -> {film_id: set(roles)}
+            person_films_dict = defaultdict(lambda: defaultdict(set))
+            person_ids_set = set(person_ids)
+
+            for hit in movies_response['hits']['hits']:
+                film_id = hit['_source']['id']
+
+                # Обрабатываем режиссеров
+                for director in hit['_source'].get('directors', []):
+                    d_id = director.get('id')
+                    if d_id in person_ids_set:
+                        person_films_dict[d_id][film_id].add(PersonRole.DIRECTOR)  # noqa
+
+                # Обрабатываем актеров
+                for actor in hit['_source'].get('actors', []):
+                    a_id = actor.get('id')
+                    if a_id in person_ids_set:
+                        person_films_dict[a_id][film_id].add(PersonRole.ACTOR)
+
+                # Обрабатываем сценаристов
+                for writer in hit['_source'].get('writers', []):
+                    w_id = writer.get('id')
+                    if w_id in person_ids_set:
+                        person_films_dict[w_id][film_id].add(PersonRole.WRITER)
+
+            # Обогащаем персоны данными о фильмах
+            for person in persons:
+                films_list = []
+                if person.id in person_films_dict:
+                    for film_id, roles in person_films_dict[person.id].items():
+                        films_list.append(
+                            PersonFilms(id=film_id, roles=list(roles)),
+                        )
+                person.films = films_list
+
+            return persons
 
         except Exception as error:
             self._logger.error(
                 f'Ошибка при получении данных из ES: {error}',
             )
             return persons
+
+    async def _get_movies_by_person_ids(
+        self,
+        person_ids: list[str],
+    ) -> ObjectApiResponse | None:
+        """Получает фильмы, где участвуют указанные персоны."""
+        if not person_ids:
+            return None
+        body = {
+            'size': 10000,  # Увеличили размер выборки
+            '_source': ['id', 'directors.id', 'actors.id', 'writers.id'],
+            'query': {
+                'bool': {
+                    'should': [
+                        # Исправлено: используем nested-запросы для directors
+                        {
+                            'nested': {
+                                'path': 'directors',
+                                'query': {
+                                    'terms': {'directors.id': person_ids},
+                                },
+                            },
+                        },
+                        # Исправлено: используем nested-запросы для actors
+                        {
+                            'nested': {
+                                'path': 'actors',
+                                'query': {
+                                    'terms': {'actors.id': person_ids},
+                                },
+                            },
+                        },
+                        # Исправлено: используем nested-запросы для writers
+                        {
+                            'nested': {
+                                'path': 'writers',
+                                'query': {
+                                    'terms': {'writers.id': person_ids},
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+
+        try:
+            return await self._elastic.search(
+                index=self._es_movies_index,
+                body=body,
+            )
+        except Exception as e:
+            self._logger.error(f'Ошибка при запросе фильмов: {e}')
+            return None
 
     @async_backoff()
     async def __get_row_persons_from_redis(self, cache_key: str):
