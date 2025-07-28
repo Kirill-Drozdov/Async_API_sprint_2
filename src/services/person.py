@@ -78,7 +78,7 @@ class PersonService:
 
         Args:
             response (ObjectApiResponse): Результат ответа от ES.
-            persons (list): пустой список для заполнения фильмами.
+            persons (list): пустой список для заполнения персонажами.
 
         Returns:
             list[PersonDetail]: Список сериализованных объектов.
@@ -99,16 +99,16 @@ class PersonService:
         page_size: int,
         page_number: int,
     ) -> list[PersonDetail]:
-        """Получает список фильмов с пагинацией в соответствии с результатом
-            поискового запроса по названию фильма.
+        """Получает список персонажей с пагинацией в соответствии с результатом
+            поискового запроса по имени персонажа.
 
         Args:
-            query: Поисковой запрос по названию фильма.
+            query: Поисковой запрос по имени персонажа.
             page_size: Количество элементов на странице.
             page_number: Номер страницы (начинается с 1).
 
         Returns:
-            Список кинопроизведений в виде объекта PersonDetail.
+            Список персонажей в виде объекта PersonDetail.
         """
         # Создаем уникальный ключ для кэширования запроса.
         cache_key = self.__generate_cache_key(
@@ -153,10 +153,10 @@ class PersonService:
         query: str,
         body: dict,
     ) -> list[PersonDetail]:
-        """Реализует поиск кинопроизведений в ES по названию фильма.
+        """Реализует поиск персонажей в ES по имени.
 
         Args:
-            query: полное или частичное название фильма.
+            query: полное или частичное имя персонажа.
             body: Тело запроса к ES.
 
         Returns:
@@ -203,14 +203,14 @@ class PersonService:
         self,
         cache_key: str,
     ) -> list[PersonDetail] | None:
-        """Получает список фильмов из кэша.
+        """Получает список персонажей из кэша.
 
         Args:
             cache_key (str): ключ, по которому будет получен закешированный
                 результат.
 
         Returns:
-            Список кинопроизведений в виде объекта PersonDetail.
+            Список персонажей в виде объекта PersonDetail.
         """
         try:
             cached_data = await self.__get_row_persons_from_redis(
@@ -245,14 +245,14 @@ class PersonService:
         cache_key: str,
         persons: list[PersonDetail],
     ):
-        """Сохраняет список фильмов в кэш.
+        """Сохраняет список персонажей в кэш.
 
         Args:
             cache_key (str): ключ, по которому будет закеширован результат.
-            persons: list[PersonDetail]: кинопроизведения для кеширования.
+            persons: list[PersonDetail]: персонажи для кеширования.
 
         Returns:
-            Список кинопроизведений в виде объекта PersonDetail.
+            Список персонажей в виде объекта PersonDetail.
         """
         try:
             persons_data = [
