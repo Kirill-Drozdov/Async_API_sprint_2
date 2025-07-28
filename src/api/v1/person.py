@@ -1,0 +1,56 @@
+from http import HTTPStatus
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from models.person import PersonDetail
+from services.person import PersonService, get_person_service
+
+router = APIRouter()
+
+
+@router.get(
+    '/search',
+    response_model=list[PersonDetail],
+    summary='Поиск персонажей',
+    response_description='Информация по найденным персонажам',
+    status_code=HTTPStatus.OK,
+)
+async def get_persons_by_search(
+    person_service: PersonService = Depends(get_person_service),
+    query: str = Query(None, description='Поиск по имени персонажа'),
+    page_size: int = Query(
+        default=50,
+        alias='page[size]',
+        ge=1,
+        le=100,
+        description='Количество элементов на странице',
+    ),
+    page_number: int = Query(
+        default=1,
+        alias='page[number]',
+        ge=1,
+        description='Номер страницы',
+    ),
+) -> list[PersonDetail]:
+    """Результат поиска персонажей.
+
+    - **uuid**: уникальный идентификатор персонажа.
+    - **full_name**: имя персонажа.
+    - **films**: фильмы, в которых принимал участие:
+      - **uuid**: уникальный идентификатор кинопроизведения.
+      - **roles**: список ролей на площадке, которые исполнял персонаж.
+    """
+
+    persons = await person_service.get_persons_by_search(
+        query=query,
+        page_size=page_size,
+        page_number=page_number,
+    )
+
+    if not persons:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail='Персонажи не найдены',
+        )
+
+    return persons
