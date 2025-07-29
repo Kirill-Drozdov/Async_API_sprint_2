@@ -94,6 +94,47 @@ class PersonService:
             persons.append(person)
         return persons
 
+    @staticmethod
+    def _get_persons_films(  # noqa
+        person_ids: list[str],
+        movies_response: ObjectApiResponse,
+    ) -> dict:
+        """Собирает персон и роли, которые персоны занимали в фильме.
+
+        Args:
+            person_ids: идентификаторы персон.
+            movies_response: объект ответа ES при поиске фильмов.
+
+        Returns:
+            Словарь с персонами и ролями персон в фильмах.
+        """
+        # Создаем промежуточную структуру:
+        # person_id -> {film_id: set(roles)}
+        person_films_dict = defaultdict(lambda: defaultdict(set))
+        person_ids_set = set(person_ids)
+
+        for hit in movies_response['hits']['hits']:
+            film_id = hit['_source']['id']
+
+            # Обрабатываем режиссеров
+            for director in hit['_source'].get('directors', []):
+                d_id = director.get('id')
+                if d_id in person_ids_set:
+                    person_films_dict[d_id][film_id].add(PersonRole.DIRECTOR)
+
+            # Обрабатываем актеров
+            for actor in hit['_source'].get('actors', []):
+                a_id = actor.get('id')
+                if a_id in person_ids_set:
+                    person_films_dict[a_id][film_id].add(PersonRole.ACTOR)
+
+            # Обрабатываем сценаристов
+            for writer in hit['_source'].get('writers', []):
+                w_id = writer.get('id')
+                if w_id in person_ids_set:
+                    person_films_dict[w_id][film_id].add(PersonRole.WRITER)
+        return person_films_dict
+
     async def get_persons_by_search(
         self,
         query: str,
@@ -136,7 +177,7 @@ class PersonService:
         return persons
 
     @async_backoff()
-    async def __get_row_persons_from_elastic(
+    async def __get_row_data_from_elastic(
         self,
         body: dict,
         index: str,
@@ -178,7 +219,7 @@ class PersonService:
             }
 
             # Выполняем запрос к Elasticsearch.
-            response = await self.__get_row_persons_from_elastic(
+            response = await self.__get_row_data_from_elastic(
                 body=body,
                 index=self._es_index,
             )
@@ -198,40 +239,22 @@ class PersonService:
             if not movies_response:
                 return persons
 
-            # Создаем промежуточную структуру:
-            # person_id -> {film_id: set(roles)}
-            person_films_dict = defaultdict(lambda: defaultdict(set))
-            person_ids_set = set(person_ids)
-
-            for hit in movies_response['hits']['hits']:
-                film_id = hit['_source']['id']
-
-                # Обрабатываем режиссеров
-                for director in hit['_source'].get('directors', []):
-                    d_id = director.get('id')
-                    if d_id in person_ids_set:
-                        person_films_dict[d_id][film_id].add(PersonRole.DIRECTOR)  # noqa
-
-                # Обрабатываем актеров
-                for actor in hit['_source'].get('actors', []):
-                    a_id = actor.get('id')
-                    if a_id in person_ids_set:
-                        person_films_dict[a_id][film_id].add(PersonRole.ACTOR)
-
-                # Обрабатываем сценаристов
-                for writer in hit['_source'].get('writers', []):
-                    w_id = writer.get('id')
-                    if w_id in person_ids_set:
-                        person_films_dict[w_id][film_id].add(PersonRole.WRITER)
-
+            person_films_dict = self._get_persons_films(
+                person_ids=person_ids,
+                movies_response=movies_response,
+            )
             # Обогащаем персоны данными о фильмах
             for person in persons:
                 films_list = []
-                if person.id in person_films_dict:
-                    for film_id, roles in person_films_dict[person.id].items():
-                        films_list.append(
-                            PersonFilms(id=film_id, roles=list(roles)),
-                        )
+                if person.id not in person_films_dict:
+                    continue
+                for film_id, roles in person_films_dict[person.id].items():
+                    films_list.append(
+                        PersonFilms(
+                            id=film_id,
+                            roles=list(roles),
+                        ),
+                    )
                 person.films = films_list
 
             return persons
@@ -250,12 +273,11 @@ class PersonService:
         if not person_ids:
             return None
         body = {
-            'size': 10000,  # Увеличили размер выборки
+            'size': 10000,
             '_source': ['id', 'directors.id', 'actors.id', 'writers.id'],
             'query': {
                 'bool': {
                     'should': [
-                        # Исправлено: используем nested-запросы для directors
                         {
                             'nested': {
                                 'path': 'directors',
@@ -264,7 +286,6 @@ class PersonService:
                                 },
                             },
                         },
-                        # Исправлено: используем nested-запросы для actors
                         {
                             'nested': {
                                 'path': 'actors',
@@ -273,7 +294,6 @@ class PersonService:
                                 },
                             },
                         },
-                        # Исправлено: используем nested-запросы для writers
                         {
                             'nested': {
                                 'path': 'writers',
@@ -288,9 +308,9 @@ class PersonService:
         }
 
         try:
-            return await self._elastic.search(
-                index=self._es_movies_index,
+            return await self.__get_row_data_from_elastic(
                 body=body,
+                index=self._es_movies_index,
             )
         except Exception as e:
             self._logger.error(f'Ошибка при запросе фильмов: {e}')
