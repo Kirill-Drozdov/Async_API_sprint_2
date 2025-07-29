@@ -54,3 +54,36 @@ async def get_persons_by_search(
         )
 
     return persons
+
+
+@router.get(
+    '/{person_uuid}',
+    response_model=PersonDetail,
+    summary='Получить информацию по персонажу',
+    response_description='Информация по персонажу',
+    status_code=HTTPStatus.OK,
+)
+async def get_person_by_id(
+    person_uuid: str,
+    person_service: PersonService = Depends(get_person_service),
+) -> PersonDetail:
+    """Информация по персонажу.
+
+    - **uuid**: уникальный идентификатор персонажа.
+    - **full_name**: имя персонажа.
+    - **films**: фильмы, в которых принимал участие:
+      - **uuid**: уникальный идентификатор кинопроизведения.
+      - **roles**: список ролей на площадке, которые исполнял персонаж.
+    """
+
+    person = await person_service.get_person_by_id(
+        person_id=person_uuid,
+    )
+
+    if not person:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail='Персонаж не найден',
+        )
+
+    return person

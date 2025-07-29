@@ -176,6 +176,74 @@ class PersonService:
 
         return persons
 
+    async def get_person_by_id(self, person_id: str) -> PersonDetail | None:
+        """Получить персону по уникальному идентификатору.
+
+        Args:
+            person_id (str): уникальный идентификатор.
+
+        Returns:
+            Optional[PersonDetail]: персона, если он нашелся в БД.
+        """
+        # Пытаемся получить данные из кеша, потому что оно работает быстрее.
+        person = await self._get_person_from_cache(person_id)
+        if person:
+            return person
+        # Если персоны нет в кеше, то ищем его в Elasticsearch.
+        person = await self._get_person_from_elastic(person_id)
+        if not person:
+            # Если он отсутствует в Elasticsearch, значит, персоны вообще
+            # нет в базе.
+            return None
+        # Сохраняем персону в кеш.
+        await self._put_person_to_cache(person)
+
+        return person
+
+    @async_backoff()
+    async def _get_person_from_elastic(
+        self,
+        person_id: str,
+    ) -> PersonDetail | None:
+        """Возвращает персону из ES.
+
+        Args:
+            person_id (str): уникальный идентификатор.
+
+        Returns:
+            Кинопроизведение в виде объекта PersonDetail, если он был найден.
+        """
+        try:
+            doc = await self._elastic.get(index=self._es_index, id=person_id)
+        except NotFoundError:
+            return None
+        person = PersonDetail(**doc['_source'])
+
+        movies_response = await self._get_movies_by_person_ids(
+            person_ids=[person.id],
+        )
+        if not movies_response:
+            return person
+
+        person_films_dict = self._get_persons_films(
+            person_ids=[person.id],
+            movies_response=movies_response,
+        )
+        # Обогащаем персоны данными о фильмах
+        if person.id not in person_films_dict:
+            return person
+
+        films_list = []
+        for film_id, roles in person_films_dict[person.id].items():
+            films_list.append(
+                PersonFilms(
+                    id=film_id,
+                    roles=list(roles),
+                ),
+            )
+        person.films = films_list
+        return person
+
     @async_backoff()
     async def __get_row_data_from_elastic(
         self,
@@ -317,6 +385,34 @@ class PersonService:
             return None
 
     @async_backoff()
+    async def __get_row_person_from_redis(self, person_id: str):
+        return await self._redis.get(person_id)
+
+    async def _get_person_from_cache(
+        self,
+        person_id: str,
+    ) -> PersonDetail | None:
+        """Пытается получить данные о персоной из кеша.
+
+        Args:
+            person_id (str): уникальный идентификатор.
+
+        Returns:
+            Жанр, если он был найден в кеше.
+        """
+        try:
+            data = await self.__get_row_person_from_redis(person_id=person_id)
+            if not data:
+                return None
+            person_data = json.loads(data)
+            return PersonDetail.model_validate(person_data)
+        except Exception as error:
+            self._logger.error(
+                f'Ошибка при получении данных из кеша: {error}',
+            )
+            return None
+
+    @async_backoff()
     async def __get_row_persons_from_redis(self, cache_key: str):
         return await self._redis.get(cache_key)
 
@@ -384,6 +480,27 @@ class PersonService:
                 cache_key=cache_key,
                 persons_data=persons_data,
             )
+        except Exception as error:
+            self._logger.error(
+                f'Ошибка при кешировании результата: {error}',
+            )
+
+    @async_backoff()
+    async def __put_person_to_redis(self, person: PersonDetail):
+        await self._redis.set(
+            person.id,
+            person.model_dump_json(by_alias=False),
+            _PERSON_CACHE_EXPIRE_IN_SECONDS,
+        )
+
+    async def _put_person_to_cache(self, person: PersonDetail):
+        """Кеширует результат запроса на поиск персоны.
+
+        Args:
+            person (PersonDetail): персона.
+        """
+        try:
+            await self.__put_person_to_redis(person=person)
         except Exception as error:
             self._logger.error(
                 f'Ошибка при кешировании результата: {error}',
