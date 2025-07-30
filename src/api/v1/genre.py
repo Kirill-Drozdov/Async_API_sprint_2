@@ -2,7 +2,7 @@ from http import HTTPStatus
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from models.film import Genre
+from models.genre import Genre
 from services.genre import GenreService, get_genre_service
 
 router = APIRouter()
