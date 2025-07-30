@@ -13,6 +13,7 @@ from core.config import settings
 from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
+from models.film import FilmShort
 from models.person import PersonDetail, PersonFilms, PersonRole
 
 _PERSON_CACHE_EXPIRE_IN_SECONDS = settings.person_cache_expire_in_seconds
@@ -95,6 +96,31 @@ class PersonService:
         return persons
 
     @staticmethod
+    def __serialize_es_movies_response(
+        response: ObjectApiResponse,
+        films: list,
+    ) -> list[FilmShort]:
+        """Преобразуем результат ответа от ES в объекты FilmShort.
+
+        Args:
+            response (ObjectApiResponse): Результат ответа от ES.
+            films (list): пустой список для заполнения фильмами.
+
+        Returns:
+            list[FilmShort]: Список сериализованных объектов.
+        """
+
+        for hit in response['hits']['hits']:
+            source = hit['_source']
+            film = FilmShort(
+                id=source['id'],
+                title=source['title'],
+                imdb_rating=source['imdb_rating'],
+            )
+            films.append(film)
+        return films
+
+    @staticmethod
     def _get_persons_films(  # noqa
         person_ids: list[str],
         movies_response: ObjectApiResponse,
@@ -172,9 +198,32 @@ class PersonService:
             body=body,
         )
         # Сохраняем в кэш.
-        await self._put_persons_to_cache(cache_key, persons)
+        await self._put_data_to_cache(cache_key, persons)
 
         return persons
+
+    async def get_films_by_person(self, person_id: str) -> list[FilmShort]:
+        """Получить фильмы по уникальному идентификатору персоны.
+
+        Args:
+            person_id (str): уникальный идентификатор.
+
+        Returns:
+            Optional[FilmShort]: фильмы по персоне.
+        """
+        cache_key = f'{person_id}_by_film'
+        cached_result = await self._get_films_from_cache(
+            cache_key=cache_key,
+        )
+        if cached_result:
+            return cached_result
+
+        films = await self._get_films_by_person_from_elastic(
+            person_id=person_id,
+        )
+        await self._put_data_to_cache(cache_key, films)
+
+        return films
 
     async def get_person_by_id(self, person_id: str) -> PersonDetail | None:
         """Получить персону по уникальному идентификатору.
@@ -200,6 +249,30 @@ class PersonService:
 
         return person
 
+    async def _get_films_by_person_from_elastic(
+        self,
+        person_id: str,
+    ) -> list[FilmShort]:
+        """Получить фильмы из ES по уникальному идентификатору персоны.
+
+        Args:
+            person_id (str): уникальный идентификатор.
+
+        Returns:
+            Optional[FilmShort]: фильмы по персоне.
+        """
+        movies_response = await self._get_movies_by_person_ids(
+            person_ids=[person_id],
+            source=['id', 'title', 'imdb_rating'],
+        )
+        if movies_response is None:
+            return []
+
+        return self.__serialize_es_movies_response(
+            response=movies_response,
+            films=[],
+        )
+
     @async_backoff()
     async def _get_person_from_elastic(
         self,
@@ -221,6 +294,7 @@ class PersonService:
 
         movies_response = await self._get_movies_by_person_ids(
             person_ids=[person.id],
+            source=['id', 'directors.id', 'actors.id', 'writers.id'],
         )
         if not movies_response:
             return person
@@ -303,7 +377,10 @@ class PersonService:
             person_ids = [person.id for person in persons]
 
             # Запрашиваем фильмы, где участвуют найденные персоны
-            movies_response = await self._get_movies_by_person_ids(person_ids)
+            movies_response = await self._get_movies_by_person_ids(
+                person_ids=person_ids,
+                source=['id', 'directors.id', 'actors.id', 'writers.id'],
+            )
             if not movies_response:
                 return persons
 
@@ -336,13 +413,21 @@ class PersonService:
     async def _get_movies_by_person_ids(
         self,
         person_ids: list[str],
+        source: list[str],
     ) -> ObjectApiResponse | None:
-        """Получает фильмы, где участвуют указанные персоны."""
+        """Получает фильмы, где участвуют указанные персоны.
+
+        Args:
+            person_ids: идентификаторы персон.
+            source: Поля для запроса к ES.
+
+        Returns:
+        """
         if not person_ids:
             return None
         body = {
             'size': 10000,
-            '_source': ['id', 'directors.id', 'actors.id', 'writers.id'],
+            '_source': source,
             'query': {
                 'bool': {
                     'should': [
@@ -445,8 +530,37 @@ class PersonService:
             )
         return None
 
+    async def _get_films_from_cache(
+        self,
+        cache_key: str,
+    ) -> list[FilmShort] | None:
+        """Получает список фильмов из кэша.
+
+        Args:
+            cache_key (str): ключ, по которому будет получен закешированный
+                результат.
+
+        Returns:
+            Список фильмов в виде объекта FilmShort.
+        """
+        try:
+            cached_data = await self.__get_row_persons_from_redis(
+                cache_key=cache_key,
+            )
+            if cached_data:
+                persons_data = json.loads(cached_data)
+                return [
+                    FilmShort.model_validate(person_data)
+                    for person_data in persons_data
+                ]
+        except Exception as error:
+            self._logger.error(
+                f'Ошибка при получении данных из кеша: {error}',
+            )
+        return None
+
     @async_backoff()
-    async def __put_fims_to_redis(
+    async def __put_data_to_redis(
         self,
         cache_key: str,
         persons_data: list[dict],
@@ -457,26 +571,23 @@ class PersonService:
             json.dumps(persons_data),
         )
 
-    async def _put_persons_to_cache(
+    async def _put_data_to_cache(
         self,
         cache_key: str,
-        persons: list[PersonDetail],
-    ):
+        data_objects: list[PersonDetail] | list[FilmShort],
+    ) -> None:
         """Сохраняет список персонажей в кэш.
 
         Args:
             cache_key (str): ключ, по которому будет закеширован результат.
-            persons: list[PersonDetail]: персонажи для кеширования.
-
-        Returns:
-            Список персонажей в виде объекта PersonDetail.
+            data_objects: объекты для кеширования.
         """
         try:
             persons_data = [
-                person.model_dump(by_alias=False)
-                for person in persons
+                obj.model_dump(by_alias=False)
+                for obj in data_objects
             ]
-            await self.__put_fims_to_redis(
+            await self.__put_data_to_redis(
                 cache_key=cache_key,
                 persons_data=persons_data,
             )

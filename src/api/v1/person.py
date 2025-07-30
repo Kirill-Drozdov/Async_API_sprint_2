@@ -2,6 +2,7 @@ from http import HTTPStatus
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from models.film import FilmShort
 from models.person import PersonDetail
 from services.person import PersonService, get_person_service
 
@@ -54,6 +55,37 @@ async def get_persons_by_search(
         )
 
     return persons
+
+
+@router.get(
+    '/{person_uuid}/film',
+    response_model=list[FilmShort],
+    summary='Получить фильмы по персонажу',
+    response_description='Фильмы по персонажу',
+    status_code=HTTPStatus.OK,
+)
+async def get_films_by_person(
+    person_uuid: str,
+    person_service: PersonService = Depends(get_person_service),
+) -> list[FilmShort]:
+    """Фильмы по персонажу.
+
+    - **uuid**: уникальный идентификатор кинопроизведения.
+    - **title**: название.
+    - **imdb_rating**: рейтинг с платформы imdb.
+    """
+
+    films = await person_service.get_films_by_person(
+        person_id=person_uuid,
+    )
+
+    if not films:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail='Фильмы по персонажу не найдены',
+        )
+
+    return films
 
 
 @router.get(
