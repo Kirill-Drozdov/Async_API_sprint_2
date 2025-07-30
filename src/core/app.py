@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 from redis.asyncio import Redis
 
-from api.v1 import film
+from api.v1 import film, genre, person
 from core.config import settings
 from db import elastic, redis
 
@@ -61,7 +61,13 @@ def get_app() -> FastAPI:
     )
 
     # Подключение роутеров.
-    app.include_router(film.router, prefix='/api/v1/films', tags=['films'])
+    app.include_router(film.router, prefix='/api/v1/films', tags=['Films'])
+    app.include_router(genre.router, prefix='/api/v1/genres', tags=['Genres'])
+    app.include_router(
+        person.router,
+        prefix='/api/v1/persons',
+        tags=['Persons'],
+    )
 
     return app
 
