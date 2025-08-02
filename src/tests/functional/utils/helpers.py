@@ -1,5 +1,9 @@
 import uuid
 
+from elasticsearch import Elasticsearch
+from redis.asyncio import Redis
+
+from tests.functional.utils.backoff import backoff
 
 # Генерируем фиксированные ID для повторяющихся сущностей.
 genre_action_id = str(uuid.uuid4())
@@ -33,7 +37,7 @@ def generate_es_data(data_size: int) -> tuple[list[dict], list[str]]:
                     else genre_scifi_id,
                     'name': main_genre,
                 },
-                {'id': genre_scifi_id, 'name': 'Sci-Fi'}
+                {'id': genre_scifi_id, 'name': 'Sci-Fi'},
             ],
             'title': f'Film {i}',
             'description': 'Description',
@@ -43,10 +47,30 @@ def generate_es_data(data_size: int) -> tuple[list[dict], list[str]]:
             'directors': [{'id': director_id, 'name': 'Director'}],
             'actors': [
                 {'id': str(uuid.uuid4()), 'name': 'Actor 1'},
-                {'id': str(uuid.uuid4()), 'name': 'Actor 2'}
+                {'id': str(uuid.uuid4()), 'name': 'Actor 2'},
             ],
-            'writers': [{'id': str(uuid.uuid4()), 'name': 'Writer'}]
+            'writers': [{'id': str(uuid.uuid4()), 'name': 'Writer'}],
         }
         es_data.append(film_data)
 
     return es_data, action_films_id
+
+
+@backoff()
+def ping_remote_service_host(
+    service: Elasticsearch | Redis,
+    service_name: str,
+) -> None:
+    """Проверяет связь с хостом заданного сервиса.
+
+    Функция обернута в backoff. Таким образом проверка связи будет итеративной.
+
+    Args:
+        service (Elasticsearch | Redis): объект клиента сервиса.
+        service_name (str): название сервиса.
+
+    Raises:
+        ConnectionError: если сервис не доступен.
+    """
+    if not service.ping():
+        raise ConnectionError(f'Failed to connect with {service_name}...')

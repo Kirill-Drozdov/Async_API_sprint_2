@@ -3,7 +3,7 @@ import json
 import logging
 
 from elastic_transport import ObjectApiResponse
-from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
+from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
 from redis.asyncio import Redis
 
@@ -12,17 +12,22 @@ from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import Genre
+from repository.es_repository import ElasticSearchRepository
 
 _GENRE_CACHE_EXPIRE_IN_SECONDS = settings.genre_cache_expire_in_seconds
+
+
+class GenreEsRepository(ElasticSearchRepository[Genre]):
+    pass
 
 
 class GenreService:
     """Класс, описывающий бизнес-логику взаимодействия с жанрами.
     """
 
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
+    def __init__(self, redis: Redis, repository: GenreEsRepository):
         self._redis = redis
-        self._elastic = elastic
+        self._repository = repository
         self._logger = logging.getLogger(__name__)
         self._es_index = 'genres'
 
@@ -95,7 +100,10 @@ class GenreService:
         if genre:
             return genre
         # Если жанра нет в кеше, то ищем его в Elasticsearch.
-        genre = await self._get_genre_from_elastic(genre_id)
+        genre = await self._repository.get(
+            index=self._es_index,
+            object_id=genre_id,
+        )
         if not genre:
             # Если он отсутствует в Elasticsearch, значит, жанра вообще
             # нет в базе.
@@ -104,36 +112,6 @@ class GenreService:
         await self._put_genre_to_cache(genre)
 
         return genre
-
-    @async_backoff()
-    async def _get_genre_from_elastic(self, genre_id: str) -> Genre | None:
-        """Возвращает жанр из ES.
-
-        Args:
-            genre_id (str): уникальный идентификатор.
-
-        Returns:
-            Кинопроизведение в виде объекта Genre, если он был найден.
-        """
-        try:
-            doc = await self._elastic.get(index=self._es_index, id=genre_id)
-        except NotFoundError:
-            return None
-        return Genre(**doc['_source'])
-
-    @async_backoff()
-    async def __get_row_genres_from_elastic(
-        self,
-        body: dict,
-        index: str,
-    ) -> ObjectApiResponse | None:
-        try:
-            return await self._elastic.search(
-                index=index,
-                body=body,
-            )
-        except (BadRequestError, NotFoundError):
-            return None
 
     async def _get_genres_from_elastic(
         self,
@@ -149,7 +127,7 @@ class GenreService:
         """
         genres = []
         try:
-            response = await self.__get_row_genres_from_elastic(
+            response = await self._repository.get_multi(
                 body=body,
                 index=self._es_index,
             )
@@ -301,4 +279,10 @@ def get_genre_service(
     Returns:
         Объект GenreService.
     """
-    return GenreService(redis, elastic)
+    return GenreService(
+        redis=redis,
+        repository=GenreEsRepository(
+            response_model=Genre,
+            elastic=elastic,
+        ),
+    )

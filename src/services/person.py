@@ -5,7 +5,7 @@ import json
 import logging
 
 from elastic_transport import ObjectApiResponse
-from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
+from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
 from redis.asyncio import Redis
 
@@ -15,17 +15,22 @@ from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import FilmShort
 from models.person import PersonDetail, PersonFilms, PersonRole
+from repository.es_repository import ElasticSearchRepository
 
 _PERSON_CACHE_EXPIRE_IN_SECONDS = settings.person_cache_expire_in_seconds
+
+
+class PersonEsRepository(ElasticSearchRepository[PersonDetail]):
+    pass
 
 
 class PersonService:
     """Класс, описывающий бизнес-логику взаимодействия с персонажами.
     """
 
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
+    def __init__(self, redis: Redis, repository: PersonEsRepository):
         self._redis = redis
-        self._elastic = elastic
+        self._repository = repository
         self._logger = logging.getLogger(__name__)
         self._es_index = 'persons'
         self._es_movies_index = 'movies'
@@ -286,11 +291,12 @@ class PersonService:
         Returns:
             Кинопроизведение в виде объекта PersonDetail, если он был найден.
         """
-        try:
-            doc = await self._elastic.get(index=self._es_index, id=person_id)
-        except NotFoundError:
-            return None
-        person = PersonDetail(**doc['_source'])
+        person = await self._repository.get(
+            index=self._es_index,
+            object_id=person_id,
+        )
+        if person is None:
+            return person
 
         movies_response = await self._get_movies_by_person_ids(
             person_ids=[person.id],
@@ -317,20 +323,6 @@ class PersonService:
             )
         person.films = films_list
         return person
-
-    @async_backoff()
-    async def __get_row_data_from_elastic(
-        self,
-        body: dict,
-        index: str,
-    ) -> ObjectApiResponse | None:
-        try:
-            return await self._elastic.search(
-                index=index,
-                body=body,
-            )
-        except (BadRequestError, NotFoundError):
-            return None
 
     async def _get_persons_from_elastic_by_name(  # noqa
         self,
@@ -361,7 +353,7 @@ class PersonService:
             }
 
             # Выполняем запрос к Elasticsearch.
-            response = await self.__get_row_data_from_elastic(
+            response = await self._repository.get_multi(
                 body=body,
                 index=self._es_index,
             )
@@ -461,7 +453,7 @@ class PersonService:
         }
 
         try:
-            return await self.__get_row_data_from_elastic(
+            return await self._repository.get_multi(
                 body=body,
                 index=self._es_movies_index,
             )
@@ -633,4 +625,10 @@ def get_person_service(
     Returns:
         Объект PersonService.
     """
-    return PersonService(redis, elastic)
+    return PersonService(
+        redis=redis,
+        repository=PersonEsRepository(
+            elastic=elastic,
+            response_model=PersonDetail,
+        ),
+    )
