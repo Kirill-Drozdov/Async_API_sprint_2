@@ -11,6 +11,8 @@ ResponseModelType = TypeVar('ResponseModelType', bound=BaseModel)
 
 
 class ElasticSearchRepository(Repository, Generic[ResponseModelType]):
+    """Осуществляет взаимодействие с хранилищем на базе Elasticsearch."""
+
     def __init__(
         self,
         elastic: AsyncElasticsearch,
