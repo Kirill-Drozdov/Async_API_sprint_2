@@ -18,6 +18,36 @@ _FILMS_API_URL = (
 es_data, action_films_id = generate_es_data(data_size=MAX_FILMS_DATA_SIZE)
 
 
+def _check_result_for_films(body: dict, expected_answer: dict) -> None:
+    """Проверяет корректность ответа после получения данных о фильмах.
+
+    Args:
+        body (dict): тело ответа.
+        expected_answer (dict): ожидаемый результат.
+
+    Raises:
+        AssertionError: если ответ не соответствует ожидаемому результату.
+    """
+    assert len(body) == expected_answer.get('length')
+    # Проверка структуры.
+    for film in body:
+        assert 'uuid' in film
+        assert 'title' in film
+        assert 'imdb_rating' in film
+    # Проверка сортировки.
+    if 'first_rating' in expected_answer:
+        if expected_answer.get('sort_order') == 'asc':
+            assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
+            assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
+        else:
+            assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
+            assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
+    # Проверка фильтрации по жанру.
+    if 'all_genres' in expected_answer:
+        for film in body:
+            assert film.get('uuid') in action_films_id
+
+
 @pytest.mark.parametrize(
     ('query_data', 'expected_answer'),
     [
@@ -43,31 +73,6 @@ es_data, action_films_id = generate_es_data(data_size=MAX_FILMS_DATA_SIZE)
             # Максимальный размер страницы.
             {'page[size]': 100},
             {'status': HTTPStatus.OK, 'length': MAX_FILMS_DATA_SIZE},
-        ),
-        # Тесты сортировки и фильтрации.
-        (
-            {'sort': 'imdb_rating'},
-            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 1.0, 'last_rating': 7.5}  # noqa
-        ),
-        (
-            {'sort': '-imdb_rating'},
-            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 9.0, 'last_rating': 2.0}  # noqa
-        ),
-        (
-            {'genre': genre_action_id},
-            {'status': HTTPStatus.OK, 'length': 30, 'all_genres': ['Action']},
-        ),
-        (
-            {'genre': genre_action_id, 'sort': '-imdb_rating'},
-            {'status': HTTPStatus.OK, 'length': 30, 'first_rating': 9.0, 'last_rating': 1.0, 'all_genres': ['Action']}  # noqa
-        ),
-        (
-            {'genre': 'Non-Existing-Genre'},
-            {'status': HTTPStatus.NOT_FOUND, 'detail': 'Кинопроизведения не найдены'}  # noqa
-        ),
-        (
-            {'sort': 'invalid_field'},
-            {'status': HTTPStatus.UNPROCESSABLE_ENTITY, 'detail': 'Invalid sort parameter'}  # noqa
         ),
     ],
 )
@@ -103,24 +108,139 @@ async def test_get_films(  # noqa
     # 3. Проверяем ответ.
     assert status == expected_answer.get('status')
     if status == HTTPStatus.OK:
-        assert len(body) == expected_answer.get('length')
-        # Проверка структуры.
-        for film in body:
-            assert 'uuid' in film
-            assert 'title' in film
-            assert 'imdb_rating' in film
-        # Проверка сортировки.
-        if 'first_rating' in expected_answer:
-            if expected_answer.get('sort_order') == 'asc':
-                assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
-                assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
-            else:
-                assert body[0]['imdb_rating'] == expected_answer['first_rating']  # noqa
-                assert body[-1]['imdb_rating'] == expected_answer['last_rating']  # noqa
-        # Проверка фильтрации по жанру.
-        if 'all_genres' in expected_answer:
-            for film in body:
-                assert film.get('uuid') in action_films_id
+        _check_result_for_films(body=body, expected_answer=expected_answer)
+
+    # 1. Чистим ES от индекса, чтобы проверить кеширование.
+    es_delete_index(index=test_settings.es_index)
+
+    # 2. Запрашиваем данные.
+    body_cached, status_cached = await make_get_request(
+        _FILMS_API_URL,
+        query_data,
+    )
+
+    # 3. Проверяем закешированный ответ.
+    assert status_cached == expected_answer.get('status')
+    if status_cached == HTTPStatus.OK:
+        assert len(body_cached) == expected_answer.get('length')
+
+
+@pytest.mark.parametrize(
+    ('query_data', 'expected_answer'),
+    [
+        (
+            {'sort': 'imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 1.0, 'last_rating': 7.5}  # noqa
+        ),
+        (
+            {'sort': '-imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 50, 'first_rating': 9.0, 'last_rating': 2.0}  # noqa
+        ),
+        (
+            {'sort': 'invalid_field'},
+            {'status': HTTPStatus.UNPROCESSABLE_ENTITY, 'detail': 'Invalid sort parameter'}  # noqa
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_films_with_sort(  # noqa
+    es_write_data: Callable,
+    es_delete_index: Callable,
+    make_get_request: Callable,
+    query_data: dict[str, str],
+    expected_answer: dict[str, int],
+):
+    """Проверка поиска кинопроизведений с учетом сортировки."""
+    # 1.1 Генерируем данные для ES (соответствующие схеме индекса).
+    bulk_query: list[dict] = []
+    for row in es_data:
+        bulk_query.append(
+            {
+                '_index': test_settings.es_index,
+                '_id': row['id'],
+                '_source': row,
+            },
+        )
+    # 1.2 Загружаем данные в ES.
+    await es_write_data(
+        data=bulk_query,
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
+
+    # 2. Запрашиваем данные из ES по API.
+    body, status = await make_get_request(_FILMS_API_URL, query_data)
+
+    # 3. Проверяем ответ.
+    assert status == expected_answer.get('status')
+    if status == HTTPStatus.OK:
+        _check_result_for_films(body=body, expected_answer=expected_answer)
+
+    # 1. Чистим ES от индекса, чтобы проверить кеширование.
+    es_delete_index(index=test_settings.es_index)
+
+    # 2. Запрашиваем данные.
+    body_cached, status_cached = await make_get_request(
+        _FILMS_API_URL,
+        query_data,
+    )
+
+    # 3. Проверяем закешированный ответ.
+    assert status_cached == expected_answer.get('status')
+    if status_cached == HTTPStatus.OK:
+        assert len(body_cached) == expected_answer.get('length')
+
+
+@pytest.mark.parametrize(
+    ('query_data', 'expected_answer'),
+    [
+        (
+            {'genre': genre_action_id},
+            {'status': HTTPStatus.OK, 'length': 30, 'all_genres': ['Action']},
+        ),
+        (
+            {'genre': genre_action_id, 'sort': '-imdb_rating'},
+            {'status': HTTPStatus.OK, 'length': 30, 'first_rating': 9.0, 'last_rating': 1.0, 'all_genres': ['Action']}  # noqa
+        ),
+        (
+            {'genre': 'Non-Existing-Genre'},
+            {'status': HTTPStatus.NOT_FOUND, 'detail': 'Кинопроизведения не найдены'}  # noqa
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_films_by_genre(  # noqa
+    es_write_data: Callable,
+    es_delete_index: Callable,
+    make_get_request: Callable,
+    query_data: dict[str, str],
+    expected_answer: dict[str, int],
+):
+    """Проверка поиска кинопроизведений по жанрам."""
+    # 1.1 Генерируем данные для ES (соответствующие схеме индекса).
+    bulk_query: list[dict] = []
+    for row in es_data:
+        bulk_query.append(
+            {
+                '_index': test_settings.es_index,
+                '_id': row['id'],
+                '_source': row,
+            },
+        )
+    # 1.2 Загружаем данные в ES.
+    await es_write_data(
+        data=bulk_query,
+        index=test_settings.es_index,
+        index_mapping=test_settings.es_index_mapping,
+    )
+
+    # 2. Запрашиваем данные из ES по API.
+    body, status = await make_get_request(_FILMS_API_URL, query_data)
+
+    # 3. Проверяем ответ.
+    assert status == expected_answer.get('status')
+    if status == HTTPStatus.OK:
+        _check_result_for_films(body=body, expected_answer=expected_answer)
 
     # 1. Чистим ES от индекса, чтобы проверить кеширование.
     es_delete_index(index=test_settings.es_index)
