@@ -1,7 +1,7 @@
 
-import uuid
 from http import HTTPStatus
 from typing import Callable
+import uuid
 
 import pytest
 
@@ -14,7 +14,7 @@ _FILMS_SEARCH_URL = (
 
 
 @pytest.mark.parametrize(
-    'query_data, expected_answer',
+    ('query_data', 'expected_answer'),
     [
         (   # Валидный запрос с незаданными параметрами пагинации.
             {'query': 'The Star'},
@@ -70,7 +70,7 @@ async def test_search(
             'imdb_rating': 8.5,
             'genres': [
                 {'id': genre_action_id, 'name': 'Action'},
-                {'id': genre_scifi_id, 'name': 'Sci-Fi'}
+                {'id': genre_scifi_id, 'name': 'Sci-Fi'},
             ],
             'title': 'The Star',
             'description': 'New World',
@@ -78,16 +78,16 @@ async def test_search(
             'actors_names': ['Ann', 'Bob'],
             'writers_names': ['Ben', 'Howard'],
             'directors': [
-                {'id': director_id, 'name': 'Stan'}
+                {'id': director_id, 'name': 'Stan'},
             ],
             'actors': [
                 {'id': 'ef86b8ff-3c82-4d31-ad8e-72b69f4e3f95', 'name': 'Ann'},
-                {'id': 'fb111f22-121e-44a7-b78f-b19191810fbf', 'name': 'Bob'}
+                {'id': 'fb111f22-121e-44a7-b78f-b19191810fbf', 'name': 'Bob'},
             ],
             'writers': [
                 {'id': 'caf76c67-c0fe-477e-8766-3ab3ff2574b5', 'name': 'Ben'},
                 {'id': 'b45bd7bc-2e16-46d5-b125-983d356768c6', 'name': 'Howard'}  # noqa
-            ]
+            ],
         } for _ in range(MAX_FILMS_DATA_SIZE)
     ]
 
@@ -98,7 +98,7 @@ async def test_search(
                 '_index': test_settings.es_index,
                 '_id': row['id'],
                 '_source': row,
-            }
+            },
         )
 
     # 2. Загружаем данные в ES.
