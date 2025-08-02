@@ -58,12 +58,11 @@ async def test_search(
     expected_answer: dict[str, int],
 ):
     """Проверка поиска кинопроизведений."""
-    # Генерируем фиксированные ID для повторяющихся сущностей.
+    # 1.1 Генерируем фиксированные ID для повторяющихся сущностей.
     genre_action_id = str(uuid.uuid4())
     genre_scifi_id = str(uuid.uuid4())
     director_id = str(uuid.uuid4())
-
-    # 1. Генерируем данные для ES (соответствующие схеме индекса).
+    # 1.2 Генерируем данные для ES (соответствующие схеме индекса).
     es_data = [
         {
             'id': str(uuid.uuid4()),
@@ -90,7 +89,6 @@ async def test_search(
             ],
         } for _ in range(MAX_FILMS_DATA_SIZE)
     ]
-
     bulk_query: list[dict] = []
     for row in es_data:
         bulk_query.append(
@@ -100,18 +98,17 @@ async def test_search(
                 '_source': row,
             },
         )
-
-    # 2. Загружаем данные в ES.
+    # 1.3 Загружаем данные в ES.
     await es_write_data(
         data=bulk_query,
         index=test_settings.es_index,
         index_mapping=test_settings.es_index_mapping,
     )
 
-    # 3. Запрашиваем данные из ES по API.
+    # 2. Запрашиваем данные из ES по API.
     body, status = await make_get_request(_FILMS_SEARCH_URL, query_data)
 
-    # 4. Проверяем ответ.
+    # 3. Проверяем ответ.
     assert status == expected_answer.get('status')
     if status == HTTPStatus.OK:
         assert len(body) == expected_answer.get('length')
@@ -123,15 +120,16 @@ async def test_search(
     else:
         assert body == {'detail': expected_answer.get('detail')}
 
-    # 5 Чистим ES от индекса, чтобы проверить кеширование.
+    # 1. Чистим ES от индекса, чтобы проверить кеширование.
     es_delete_index(index=test_settings.es_index)
 
+    # 2. Запрашиваем данные.
     body_cached, status_cached = await make_get_request(
         _FILMS_SEARCH_URL,
         query_data,
     )
 
-    # 6. Проверяем закешированный ответ.
+    # 3. Проверяем закешированный ответ.
     assert status_cached == expected_answer.get('status')
     if status_cached == HTTPStatus.OK:
         assert len(body_cached) == expected_answer.get('length')
