@@ -4,7 +4,7 @@ import json
 import logging
 
 from elastic_transport import ObjectApiResponse
-from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
+from elasticsearch import AsyncElasticsearch
 from fastapi import Depends
 from redis.asyncio import Redis
 
@@ -13,17 +13,26 @@ from core.utils import async_backoff
 from db.elastic import get_elastic
 from db.redis import get_redis
 from models.film import Film, FilmShort
+from repository.es_repository import ElasticSearchRepository
 
 _FILM_CACHE_EXPIRE_IN_SECONDS = settings.film_cache_expire_in_seconds
+
+
+class FilmEsRepository(ElasticSearchRepository[Film]):
+    pass
 
 
 class FilmService:
     """Класс, описывающий бизнес-логику взаимодействия с кинопроизведениями.
     """
 
-    def __init__(self, redis: Redis, elastic: AsyncElasticsearch):
+    def __init__(
+        self,
+        redis: Redis,
+        repository: FilmEsRepository,
+    ):
         self._redis = redis
-        self._elastic = elastic
+        self._repository = repository
         self._logger = logging.getLogger(__name__)
         self._es_index = 'movies'
 
@@ -107,7 +116,10 @@ class FilmService:
         if film:
             return film
         # Если фильма нет в кеше, то ищем его в Elasticsearch.
-        film = await self._get_film_from_elastic(film_id)
+        film = await self._repository.get(
+            index=self._es_index,
+            object_id=film_id,
+        )
         if not film:
             # Если он отсутствует в Elasticsearch, значит, фильма вообще
             # нет в базе.
@@ -327,36 +339,6 @@ class FilmService:
                 f'Ошибка при кешировании результата: {error}',
             )
 
-    @async_backoff()
-    async def _get_film_from_elastic(self, film_id: str) -> Film | None:
-        """Возвращает кинопроизведение из ES.
-
-        Args:
-            film_id (str): уникальный идентификатор.
-
-        Returns:
-            Кинопроизведение в виде объекта Film, если он был найден.
-        """
-        try:
-            doc = await self._elastic.get(index=self._es_index, id=film_id)
-        except NotFoundError:
-            return None
-        return Film(**doc['_source'])
-
-    @async_backoff()
-    async def __get_row_films_from_elastic(
-        self,
-        body: dict,
-        index: str,
-    ) -> ObjectApiResponse | None:
-        try:
-            return await self._elastic.search(
-                index=index,
-                body=body,
-            )
-        except (BadRequestError, NotFoundError):
-            return None
-
     async def _get_films_from_elastic(
         self,
         sort_order: str,
@@ -399,7 +381,7 @@ class FilmService:
             else:
                 body['query'] = {'match_all': {}}
 
-            response = await self.__get_row_films_from_elastic(
+            response = await self._repository.get_multi(
                 body=body,
                 index=self._es_index,
             )
@@ -446,7 +428,7 @@ class FilmService:
             }
 
             # Выполняем запрос к Elasticsearch.
-            response = await self.__get_row_films_from_elastic(
+            response = await self._repository.get_multi(
                 body=body,
                 index=self._es_index,
             )
@@ -480,4 +462,10 @@ def get_film_service(
     Returns:
         Объект FilmService.
     """
-    return FilmService(redis, elastic)
+    return FilmService(
+        redis=redis,
+        repository=FilmEsRepository(
+            elastic=elastic,
+            response_model=Film,
+        ),
+    )
