@@ -1,11 +1,21 @@
+# При запуске используем сеть админки.
+networks:
+  app_movies_net:
+    external: true 
+
 services:
-  db:
+  db_admin:
+    # При запуске с админкой БД не поднимать.
+    profiles: ["disabled"]
     image: postgres:16.0
     volumes:
-      - ./postgres_to_es/etl_data:/docker-entrypoint-initdb.d
+    # При отладке ETL отдельно можно использовать готовый бекап.
+      # - ./postgres_to_es/etl_data:/docker-entrypoint-initdb.d
       - postgres_data:/var/lib/postgresql/data
     env_file:
       - ./postgres_to_es/.env
+    networks:
+      - app_movies_net
   elasticsearch:
     image: elasticsearch:8.6.2
     volumes:
@@ -13,20 +23,26 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
+    networks:
+      - app_movies_net
   etl_process:
     build:
       context: ./postgres_to_es/.
     depends_on:
-      - db
+      # - db_admin
       - elasticsearch
     env_file:
       - ./postgres_to_es/.env
+    networks:
+      - app_movies_net
   redis:
     image: redis:5.0.4
     container_name: redis
     volumes:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel notice
+    networks:
+      - app_movies_net
   movie_api:
     # Помечаем сервис через отдельный профиль, чтобы пропускать его при сборке
     # на время разработки или внесения правок по ревью.
@@ -38,6 +54,8 @@ services:
       - redis
     env_file:
       - ./src/.env
+    networks:
+      - app_movies_net
   nginx:
     image: nginx:1.25.3
     ports:
@@ -47,6 +65,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - movie_api
+    networks:
+      - app_movies_net
 
 volumes:
   postgres_data:
