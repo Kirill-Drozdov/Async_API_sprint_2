@@ -77,7 +77,7 @@ class DataLoader:
         """
         data_size = len(data)
         if not data_size:
-            self._loger.info('Нет данных для загрузки.')
+            self._loger.debug('Нет данных для загрузки.')
             return
 
         self._loger.info(
